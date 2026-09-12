@@ -140,7 +140,7 @@ Flat JSON secret per environment (platform.md 3.6), every key required unless ma
 | `SIM_BEACON_KEY` | the `wbk_` key of the beacon named `simulator`, minted in the panel |
 | `SIM_HUB_URL`, `SIM_INGEST_CHANNEL` | `wss://<gateway-domain>/hub`, `<service>:ingest` (as `GET /beacons/me` reports; the app also verifies them against that call at boot and logs a mismatch) |
 | `SIM_GATEWAY_INTERNAL_URL` | `http://<docker-bridge-ip>:8080` |
-| `SIM_DB_CONNECTION` | `Host=...;Database=wmsfo_sim_<env>;Username=wmsfo_sim_app_<env>;...` |
+| `SIM_DB_CONNECTION` | a libpq URI, `postgresql://wmsfo_sim_app_<env>:<password>@<db-host>:5432/wmsfo_sim_<env>?sslmode=verify-full`; the image carries the RDS global certificate bundle at `/etc/ssl/certs/rds-global-bundle.pem` and `db.ts` passes it as the `ssl.ca` of the `pg` pool, so the server certificate is verified like the API does |
 | `SIM_COGNITO_ISSUER`, `SIM_COGNITO_CLIENT_IDS`, `SIM_ADMIN_GROUP` | the admin pool, `wmsfo-simulator`, `admin` |
 | `SIM_CORS_ORIGINS` | the control page origins, exact |
 | `SIM_LOG_LEVEL` | `info` |
