@@ -30,7 +30,7 @@ export function buildManagerSettings(opts: AuthOptions): UserManagerSettings {
   const settings: UserManagerSettings = {
     authority: config.cognitoAuthority,
     client_id: config.cognitoClientId,
-    redirect_uri: `${origin}/callback`,
+    redirect_uri: `${origin}/auth/callback`,
     post_logout_redirect_uri: logoutUri,
     response_type: "code",
     scope: "openid email profile",

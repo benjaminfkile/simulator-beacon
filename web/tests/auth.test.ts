@@ -17,7 +17,7 @@ describe("buildManagerSettings", () => {
       "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_ABC123",
     );
     expect(s.client_id).toBe("client-abc");
-    expect(s.redirect_uri).toBe("https://sim.example/callback");
+    expect(s.redirect_uri).toBe("https://sim.example/auth/callback");
     expect(s.post_logout_redirect_uri).toBe("https://sim.example/");
     expect(s.response_type).toBe("code");
     expect(s.metadataSeed?.end_session_endpoint).toBe(
