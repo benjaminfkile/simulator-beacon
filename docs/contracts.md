@@ -1947,6 +1947,10 @@ on channelEvicted(service_removed): join again every 5 s
 
 At most one connection exists. A join that throws, including after `auth_expired`, stops the connection and takes the close-or-failure branch (`socketState = reconnecting`, backoff). A retry is never gated on the reported network state: while Android reports no network the service still probes on the 5 s tick, and the connectivity callback only shortens the wait.
 
+The socket loop registers its `ChannelEvent` handler with the argument type the client's Gson deserializer can build (Java's `com.google.gson.JsonElement` or `Object` and a map walk); the client drops an argument it cannot build before the handler runs, and an eviction announced that way is never seen. Each eviction is logged (`socket: evicted <reason>`), each re-join outcome is logged (`socket: rejoined` or `socket: rejoin failed <error>`), and `rejoinCount` on the transport telemetry counts every `JoinPrivateChannel` re-invocation the loop issues on a still-open connection.
+
+An unannounced loss of channel membership can also arrive as repeated hub rejections while `socketState` stays `connected` (a sweep evicts a stale allow without an envelope reaching the client, a race with the gateway callback, and so on). Three consecutive `hub_rejected` outcomes while `socketState == connected` ask the socket loop to re-join the ingest channel once (the same path as `auth_expired`); if that re-join throws, the socket loop takes its close-or-failure branch (`socketState = reconnecting`, backoff), and the next attempts fall back to HTTP until the socket is `connected` again. The counter resets on any delivered send.
+
 Send loop (runs every `REDNOSE_FIX_INTERVAL_MS` and immediately on a new fix; after a failed send the next attempt waits `backoff[min(attempt, 3)]`, and a fix arriving during the wait replaces `LatestFix` and goes out when the wait ends):
 
 ```
