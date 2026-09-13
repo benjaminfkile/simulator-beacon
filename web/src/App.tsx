@@ -203,7 +203,7 @@ interface ControlPanelProps {
 
 const SPEED_OPTIONS: readonly Speed[] = [1, 2, 5, 10, 20, 60] as const;
 
-function ControlPanel(props: ControlPanelProps) {
+export function ControlPanel(props: ControlPanelProps) {
   const { api } = props;
   const [state, setState] = useState<ControlState | null>(null);
   const [years, setYears] = useState<YearItem[]>([]);
@@ -211,16 +211,25 @@ function ControlPanel(props: ControlPanelProps) {
   const [selectedSpeed, setSelectedSpeed] = useState<Speed>(1);
   const [errorLine, setErrorLine] = useState<string | null>(null);
   const [busy, setBusy] = useState<"" | "start" | "stop" | "restart">("");
+  // The selects are seeded once from the row (or the years list) and then
+  // belong to the operator: a poll never overwrites a choice.
+  const yearSeededRef = useRef<boolean>(false);
+  const speedSeededRef = useRef<boolean>(false);
 
   const refreshState = useCallback(async (): Promise<void> => {
     try {
       const next = await api.getState();
       setState(next);
-      if (selectedYear === "" && next.run.year != null) setSelectedYear(next.run.year);
+      if (!yearSeededRef.current && next.run.year != null) {
+        yearSeededRef.current = true;
+        setSelectedYear(next.run.year);
+      }
       if (
+        !speedSeededRef.current &&
         next.run.speed != null &&
         (SPEED_OPTIONS as readonly number[]).includes(next.run.speed)
       ) {
+        speedSeededRef.current = true;
         setSelectedSpeed(next.run.speed as Speed);
       }
     } catch (err) {
@@ -232,9 +241,6 @@ function ControlPanel(props: ControlPanelProps) {
         setErrorLine(err instanceof Error ? err.message : String(err));
       }
     }
-    // We intentionally exclude selectedYear from deps so the poll does not
-    // re-arm on every change; the effect below owns the interval lifecycle.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api]);
 
   useEffect(() => {
@@ -244,7 +250,8 @@ function ControlPanel(props: ControlPanelProps) {
         const res = await api.getYears();
         if (cancelled) return;
         setYears(res.items);
-        if (res.items.length > 0 && selectedYear === "") {
+        if (res.items.length > 0 && !yearSeededRef.current) {
+          yearSeededRef.current = true;
           setSelectedYear(res.items[0]!.year);
         }
       } catch (err) {
@@ -256,7 +263,6 @@ function ControlPanel(props: ControlPanelProps) {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api]);
 
   // Poll GET /control/state every second while the page is visible
