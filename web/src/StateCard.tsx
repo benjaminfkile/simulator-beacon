@@ -7,8 +7,10 @@ export interface StateCardProps {
   years: YearItem[];
   selectedYear: number | "";
   selectedSpeed: Speed;
+  selectedLoop: boolean;
   onYearChange: (v: number | "") => void;
   onSpeedChange: (v: Speed) => void;
+  onLoopChange: (v: boolean) => void;
   onStart: () => void;
   onStop: () => void;
   onRestart: () => void;
@@ -60,8 +62,10 @@ export function StateCard(props: StateCardProps) {
     years,
     selectedYear,
     selectedSpeed,
+    selectedLoop,
     onYearChange,
     onSpeedChange,
+    onLoopChange,
     onStart,
     onStop,
     onRestart,
@@ -156,6 +160,12 @@ export function StateCard(props: StateCardProps) {
             >
               {run?.status ?? "none"}
             </span>
+            {run && run.cycles > 0 ? (
+              <span
+                className={styles.cycle}
+                data-testid="run-cycle"
+              >{` cycle ${run.cycles}`}</span>
+            ) : null}
           </dd>
           <dt className={styles.label}>Year</dt>
           <dd className={styles.value} data-testid="run-year">
@@ -232,6 +242,20 @@ export function StateCard(props: StateCardProps) {
                 </option>
               ))}
             </select>
+          </label>
+          <label className={styles.controlField}>
+            <span className={styles.controlLabel}>Loop</span>
+            <span className={styles.switch}>
+              <input
+                type="checkbox"
+                data-testid="loop-switch"
+                checked={selectedLoop}
+                onChange={(e) => onLoopChange(e.target.checked)}
+              />
+              <span className={styles.switchLabel}>
+                {selectedLoop ? "on" : "off"}
+              </span>
+            </span>
           </label>
         </div>
         <div className={styles.buttons}>

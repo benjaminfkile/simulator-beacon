@@ -90,6 +90,8 @@ function buildStateBody(row: SimRun, instance: string | null) {
       status: row.status,
       year: row.year,
       speed: row.speed,
+      loop: row.loop,
+      cycles: row.cycles,
       index: row.index,
       total: row.total,
       startedAt: row.startedAt,
@@ -128,7 +130,7 @@ export async function buildControlServer(
 
   await app.register(cors, {
     origin: opts.corsOrigins,
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "PATCH"],
     allowedHeaders: ["Authorization", "Content-Type"],
     credentials: false,
   });
@@ -225,6 +227,73 @@ export async function buildControlServer(
       status: "stopped",
       index: current.index,
     });
+    return sendJson(reply, 200, buildStateBody(patched, opts.instance));
+  });
+
+  app.patch("/control/run", async (req, reply) => {
+    if (!(await requireAdmin(opts.auth, req as ControlRequest, reply))) return reply;
+    const body = (req.body ?? null) as {
+      year?: unknown;
+      speed?: unknown;
+      loop?: unknown;
+    } | null;
+    if (!body || typeof body !== "object") {
+      return sendJson(reply, 400, errBody("validation_failed", "body required"));
+    }
+    const patch: {
+      year?: number;
+      speed?: Speed;
+      loop?: boolean;
+    } = {};
+    const fields: Record<string, string> = {};
+    if (body.year !== undefined) {
+      const year = body.year;
+      if (typeof year !== "number" || !Number.isInteger(year)) {
+        fields.year = "must be an integer";
+      } else {
+        // Guard the year against the current API answer so an unknown year
+        // fails 400 rather than a delayed `failed` from the worker.
+        let known = true;
+        try {
+          const years = await opts.cache.listYears();
+          known = years.some((y) => y.year === year);
+        } catch {
+          known = true;
+        }
+        if (!known) {
+          fields.year = "not a published event year";
+        } else {
+          patch.year = year;
+        }
+      }
+    }
+    if (body.speed !== undefined) {
+      const speed = body.speed;
+      if (
+        typeof speed !== "number" ||
+        !(ALLOWED_SPEEDS as readonly number[]).includes(speed)
+      ) {
+        fields.speed = `must be one of ${ALLOWED_SPEEDS.join(",")}`;
+      } else {
+        patch.speed = speed as Speed;
+      }
+    }
+    if (body.loop !== undefined) {
+      if (typeof body.loop !== "boolean") {
+        fields.loop = "must be a boolean";
+      } else {
+        patch.loop = body.loop;
+      }
+    }
+    if (Object.keys(fields).length > 0) {
+      return sendJson(reply, 400, errBody("validation_failed", "invalid body", { fields }));
+    }
+    // No fields to patch: return the current row without touching it.
+    if (Object.keys(patch).length === 0) {
+      const current = await opts.db.read();
+      return sendJson(reply, 200, buildStateBody(current, opts.instance));
+    }
+    const patched = await opts.db.update(patch);
     return sendJson(reply, 200, buildStateBody(patched, opts.instance));
   });
 

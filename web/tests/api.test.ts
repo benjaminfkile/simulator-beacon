@@ -59,6 +59,21 @@ describe("api client", () => {
     });
   });
 
+  it("PATCH /control/run sends the given fields as JSON", async () => {
+    const { impl, calls } = makeFetchStub(async () => jsonResponse(STATE_FIXTURE));
+    const api = createApiClient({
+      baseUrl: "https://example.test",
+      getIdToken: () => "T",
+      fetchImpl: impl,
+    });
+    await api.patchRun({ speed: 5 });
+    expect(calls[0]!.url).toBe("https://example.test/control/run");
+    expect(calls[0]!.init.method).toBe("PATCH");
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ speed: 5 });
+    await api.patchRun({ loop: false });
+    expect(JSON.parse(calls[1]!.init.body as string)).toEqual({ loop: false });
+  });
+
   it("sends no body to POST /control/stop and POST /control/restart (the documented bodies)", async () => {
     const { impl, calls } = makeFetchStub(async () => jsonResponse(STATE_FIXTURE));
     const api = createApiClient({

@@ -143,6 +143,49 @@ describe("scheduler timing (simulator-beacon.md 4)", () => {
     expect(pending.length).toBe(0);
   });
 
+  it("setSpeed re-times the pending delay in place and keeps the index", () => {
+    const points = makePoints([
+      "2025-01-01T00:00:00.000Z",
+      "2025-01-01T00:00:10.000Z", // 10 s later
+      "2025-01-01T00:00:20.000Z", // 10 s later
+    ]);
+    const pending: Array<{ fn: () => void; ms: number }> = [];
+    const emits: number[] = [];
+    const sched = startScheduler({
+      points,
+      speed: 1,
+      onEmit: (e) => emits.push(e.index),
+      onEnd: () => undefined,
+      setTimer: (fn, ms) => {
+        const h = { fn, ms };
+        pending.push(h);
+        return h;
+      },
+      clearTimer: (h) => {
+        const i = pending.indexOf(h as { fn: () => void; ms: number });
+        if (i >= 0) pending.splice(i, 1);
+      },
+    });
+    sched.start(0);
+    // Fire the first fix.
+    pending.shift()!.fn();
+    expect(emits).toEqual([0]);
+    // The pending timer is 10 s for index 1 (speed 1).
+    expect(pending[0]!.ms).toBe(10_000);
+    // Live speed change: the same pending delay is re-timed to 10 s / 5 = 2 s.
+    sched.setSpeed(5);
+    // A new timer replaced the previous one.
+    expect(pending.length).toBe(1);
+    expect(pending[0]!.ms).toBe(2_000);
+    expect(sched.currentSpeed()).toBe(5);
+    // The index has not moved; the next emit is still index 1.
+    expect(sched.currentIndex()).toBe(1);
+    pending.shift()!.fn();
+    expect(emits).toEqual([0, 1]);
+    // The delay for index 2 also uses the new speed (10 s / 5 = 2 s).
+    expect(pending[0]!.ms).toBe(2_000);
+  });
+
   it("restart begins again from the requested index", () => {
     const points = makePoints([
       "2025-01-01T00:00:00.000Z",

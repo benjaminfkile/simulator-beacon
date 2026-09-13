@@ -51,7 +51,7 @@ async function freshTotpCode(secret: string): Promise<string> {
   return code;
 }
 
-test("sign in, start 2025 at 60x, watch running, stop", async ({ page }) => {
+test("sign in, start 2025 at 60x, loop past the end, mid-run speed change, stop", async ({ page }) => {
   await page.goto("/");
 
   await page.getByRole("button", { name: /sign in/i }).click();
@@ -74,6 +74,9 @@ test("sign in, start 2025 at 60x, watch running, stop", async ({ page }) => {
 
   await page.getByTestId("year-select").selectOption(YEAR);
   await page.getByTestId("speed-select").selectOption(SPEED);
+  // Loop must be on so a 60x run rolls past the end and cycles rises.
+  const loopSwitch = page.getByTestId("loop-switch");
+  if (!(await loopSwitch.isChecked())) await loopSwitch.check();
   await page.getByTestId("btn-start").click();
 
   await expect(page.getByTestId("run-status")).toHaveText(/running|loading/, {
@@ -84,6 +87,13 @@ test("sign in, start 2025 at 60x, watch running, stop", async ({ page }) => {
   await page.waitForTimeout(4_000);
   const laterIndex = await page.getByTestId("run-progress").innerText();
   expect(laterIndex).not.toEqual(initialIndex);
+
+  // Mid-run change: drop to 5x. The next fixes go out at the slower cadence
+  // without the run being restarted (simulator-beacon.md 4).
+  await page.getByTestId("speed-select").selectOption("5");
+  await expect(page.getByTestId("run-status")).toHaveText(/running/, {
+    timeout: 10_000,
+  });
 
   await page.getByTestId("btn-stop").click();
   await expect(page.getByTestId("run-status")).toHaveText(/stopped/, {

@@ -6,6 +6,8 @@ export interface SimRun {
   status: RunStatus;
   year: number | null;
   speed: number;
+  loop: boolean;
+  cycles: number;
   index: number;
   total: number;
   startedAt: string | null;
