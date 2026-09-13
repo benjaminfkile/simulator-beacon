@@ -4,15 +4,27 @@
 // reads it every second, writes index every ten fixes, and writes
 // leader_state and leader_at every second.
 //
-// SIM_DB_CONNECTION is a libpq URI. On the fleet it is
-// `postgresql://…?sslmode=verify-full` and the Dockerfile drops the RDS global
-// certificate bundle at /etc/ssl/certs/rds-global-bundle.pem; db.ts reads it
-// and passes it to the pg pool as ssl.ca so the server certificate is
-// verified. Locally, docker-compose runs Postgres without TLS and the
-// connection string carries `sslmode=disable`, so no CA is loaded.
+// SIM_DB_CONNECTION is a libpq URI. It is parsed with `pg-connection-string`
+// and the pool is built from the explicit host/port/user/password/database
+// fields so that our `ssl` object survives; passing `{ connectionString, ssl }`
+// to pg lets its own URI parser overwrite `ssl` and drop the CA bundle. The
+// URI's `sslmode` picks the TLS shape:
+//   - `verify-full`, `verify-ca`: `ssl: { ca, rejectUnauthorized: true }`; the
+//     Dockerfile installs the RDS global bundle at `/etc/ssl/certs/rds-global-bundle.pem`
+//     and `db.ts` reads it. Boot fails with a clear message when the file is
+//     missing rather than silently falling back to an unverified chain.
+//   - `disable`: `ssl: false` (local docker-compose Postgres has no TLS).
+//   - anything else (`require`, `prefer`, omitted): `ssl: { rejectUnauthorized: false }`.
+// `pg` is CommonJS; under Node ESM `import { Pool } from "pg"` fails at load
+// time with "does not provide an export named 'Pool'" (Vitest's interop hides
+// it), so we use the default-import shape and destructure `Pool` off it.
 
 import { readFileSync } from "node:fs";
-import { Pool, type PoolClient } from "pg";
+import pg from "pg";
+import type { PoolClient, PoolConfig } from "pg";
+import { parse as parseConnectionString } from "pg-connection-string";
+
+const { Pool } = pg;
 
 export const RDS_CA_PATH = "/etc/ssl/certs/rds-global-bundle.pem";
 
@@ -51,7 +63,7 @@ export interface DbOptions {
   // a fixture file; production reads the one the Dockerfile installs.
   caPath?: string;
   // Test hook: override the pg Pool factory.
-  createPool?: (config: unknown) => Pool;
+  createPool?: (config: PoolConfig) => pg.Pool;
 }
 
 export interface Db {
@@ -115,37 +127,40 @@ function rowToSimRun(row: Record<string, unknown>): SimRun {
   };
 }
 
-function sslDisabled(connectionString: string): boolean {
-  // libpq accepts sslmode=disable in the query string. If it is present the
-  // pool must not send an ssl config; pg's ssl:false is the way to say that
-  // when the driver would otherwise default to "prefer".
-  try {
-    const u = new URL(connectionString);
-    const mode = u.searchParams.get("sslmode");
-    return mode === "disable";
-  } catch {
-    return false;
-  }
-}
-
-function buildPoolConfig(opts: DbOptions): {
-  connectionString: string;
-  ssl?: false | { ca: string };
-} {
-  const conn = opts.connectionString;
-  if (sslDisabled(conn)) {
-    return { connectionString: conn, ssl: false };
-  }
+export function buildPoolConfig(opts: DbOptions): PoolConfig {
+  const parsed = parseConnectionString(opts.connectionString);
+  const sslmodeRaw = (parsed as { sslmode?: unknown }).sslmode;
+  const sslmode = typeof sslmodeRaw === "string" ? sslmodeRaw : null;
   const caPath = opts.caPath ?? RDS_CA_PATH;
-  try {
-    const ca = readFileSync(caPath, "utf8");
-    return { connectionString: conn, ssl: { ca } };
-  } catch {
-    // No CA available: let pg apply its own defaults, which will surface any
-    // trust problem as a connection error rather than silently accepting a
-    // certificate the runtime cannot verify.
-    return { connectionString: conn };
+
+  const base: PoolConfig = {};
+  if (parsed.host != null) base.host = parsed.host;
+  if (parsed.port != null && parsed.port !== "") {
+    const port = Number(parsed.port);
+    if (Number.isFinite(port)) base.port = port;
   }
+  if (parsed.user != null) base.user = parsed.user;
+  if (parsed.password != null) base.password = parsed.password;
+  if (parsed.database != null) base.database = parsed.database;
+
+  if (sslmode === "disable") {
+    return { ...base, ssl: false };
+  }
+  if (sslmode === "verify-full" || sslmode === "verify-ca") {
+    let ca: string;
+    try {
+      ca = readFileSync(caPath, "utf8");
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `SIM_DB_CONNECTION uses sslmode=${sslmode} but the CA bundle at ${caPath} could not be read (${detail}); ` +
+          `the RDS global bundle must be present at ${RDS_CA_PATH} (the Dockerfile installs it) or a readable file must be passed via caPath`,
+      );
+    }
+    return { ...base, ssl: { ca, rejectUnauthorized: true } };
+  }
+  // sslmode=require, sslmode=prefer, or omitted: use TLS but skip verification.
+  return { ...base, ssl: { rejectUnauthorized: false } };
 }
 
 export function createDb(opts: DbOptions): Db {
