@@ -75,6 +75,8 @@ Nothing is queued and nothing is persisted but the run row; the current fix is t
 
 **Scheduler.** Input: the points in `seq` order with their `recordedAt`, and a speed `s` in `{ 1, 2, 5, 10, 20, 60 }`. Output: fix `i` is emitted `(recordedAt[i] - recordedAt[i-1]) / s` after fix `i-1`, clamped to at least 100 ms and at most 30 s (a gap in the recording does not stall the replay for an hour); the first fix goes out at once. Each emitted fix carries the point's `lat`, `lng`, `speedMps`, `altitudeM`, `headingDeg`, `accuracyM` as recorded (null stays null) and `recordedAt = now()`, because the API stores what the beacon says and the tracker shows the current position: a replay is a flight happening now. At the end of the recording the run stops (`status = "stopped"`, `index = total`); Restart begins again from the first point. Speed 1 is real time: the 2025 flight takes about two hours; speed 20 runs it in about six minutes.
 
+**The end, and changes while running.** When the last point has gone out the run starts again from the first point at once when `loop` is true (the default), adding one to `cycles`; when `loop` is false it stops (`stopped`, index kept at the last point). The worker compares the row with what it is running every second and acts without a restart: a new `speed` re-times the next delay with the new speed and keeps the index; a new `year` stops the active run, loads the new year, and starts it from the first point; a new `loop` value applies at the next end. Stop and start are unchanged.
+
 **Run states.** `stopped` (nothing sent), `running` (fixes flowing), `loading` (points being fetched, a few seconds), `failed` (the API refused the flight: key revoked, year gone; the reason is in `lastError` and the row stays until the next start). The heartbeat keeps going in every state, so the beacon is healthy on the panel whether or not it is replaying; going live with it active and stopped shows the waiting-for-fix state on the tracker until Start is pressed.
 
 ---
@@ -91,13 +93,14 @@ Nothing is queued and nothing is persisted but the run row; the current fix is t
 | `POST /control/start` | `{ year, speed }` | `200 SimRun` (`status: "loading"`, then `running`) | `400 validation_failed` (unknown year, speed not in the set), `409 already_running` |
 | `POST /control/stop` | | `200 SimRun` (`stopped`, index kept) | |
 | `POST /control/restart` | | `200 SimRun` (index 0, `running` with the current year and speed) | `409 no_run` |
+| `PATCH /control/run` | `{ speed?, year?, loop? }` (any subset) | `200 SimRun`: the row updated; while running the worker applies it within a second (section 4: speed live, year from the first point, loop at the next end) | `400 validation_failed` (unknown year, speed not in the set) |
 
 ```ts
-type SimRun = { status: "stopped" | "loading" | "running" | "failed"; year: number | null; speed: number; index: number; total: number;
+type SimRun = { status: "stopped" | "loading" | "running" | "failed"; year: number | null; speed: number; loop: boolean; cycles: number; index: number; total: number;
                 startedAt: string | null; lastFixAt: string | null; lastError: string | null; requestedBy: string | null; updatedAt: string };
 ```
 
-**The page** (`web/`): sign in (one button, `signinRedirect` on the admin pool with the `wmsfo-simulator` client; the callback route; a "no role" line when the token has no `admin` group), then one card: the beacon line (name, Active or Spare, live event or "no live event", socket state, last delivered, receipt latency, heartbeat age, a red Revoked banner when set), the run line (status, year, speed, `index / total`, a progress bar, elapsed since `startedAt`), a year select from `GET /control/years`, a speed select (1x, 2x, 5x, 10x, 20x, 60x), and Start, Stop, Restart. The page polls `GET /control/state` every second while visible. Styling: the site's token file copied (`tokens.css`, dark and light by `prefers-color-scheme`), Plex Sans and Mono, one frost card; no UI library. Environment: `VITE_SIM_API_BASE_URL`, `VITE_COGNITO_AUTHORITY`, `VITE_COGNITO_DOMAIN`, `VITE_COGNITO_CLIENT_ID`; a missing value renders the configuration page. Local runs on `http://localhost:5175`.
+**The page** (`web/`): sign in (one button, `signinRedirect` on the admin pool with the `wmsfo-simulator` client; the callback route; a "no role" line when the token has no `admin` group), then one card: the beacon line (name, Active or Spare, live event or "no live event", socket state, last delivered, receipt latency, heartbeat age, a red Revoked banner when set), the run line (status, year, speed, `index / total`, a progress bar, elapsed since `startedAt`), a year select from `GET /control/years`, a speed select (1x, 2x, 5x, 10x, 20x, 60x), a Loop switch, and Start, Stop, Restart. The selects and the switch are never disabled: while a run is going, a change sends `PATCH /control/run` at once and the state line shows it take effect (the run line adds "cycle n" when `cycles` is above zero); while stopped the choice is what Start will use. The selects seed once from the row and keep the operator's choice across polls. The page polls `GET /control/state` every second while visible. Styling: the site's token file copied (`tokens.css`, dark and light by `prefers-color-scheme`), Plex Sans and Mono, one frost card; no UI library. Environment: `VITE_SIM_API_BASE_URL`, `VITE_COGNITO_AUTHORITY`, `VITE_COGNITO_DOMAIN`, `VITE_COGNITO_CLIENT_ID`; a missing value renders the configuration page. Local runs on `http://localhost:5175`.
 
 ---
 
@@ -111,6 +114,8 @@ create table sim_run (
   status        text not null default 'stopped' check (status in ('stopped', 'loading', 'running', 'failed')),
   year          integer,
   speed         integer not null default 1,
+  loop          boolean not null default true,
+  cycles        integer not null default 0,
   index         integer not null default 0,
   total         integer not null default 0,
   started_at    timestamptz,
@@ -124,9 +129,9 @@ create table sim_run (
 insert into sim_run (id) values (1) on conflict do nothing;
 ```
 
-The control API updates `status`, `year`, `speed`, `index`, `requested_by`; the leader reads the row every second, acts on a change, and writes `index` every ten fixes plus `leader_state` and `leader_at` every second. Read committed; one row; no locks needed beyond `update ... where id = 1`.
+The boot also runs `alter table sim_run add column if not exists` for `loop` and `cycles`, so an existing row gains them. The control API updates `status`, `year`, `speed`, `loop`, `index`, `requested_by`; the leader reads the row every second, acts on a change, and writes `index` every ten fixes plus `leader_state` and `leader_at` every second. Read committed; one row; no locks needed beyond `update ... where id = 1`.
 
-`SIM_DB_CONNECTION` is a libpq URI. `db.ts` parses it with `pg-connection-string` and builds the pool from the explicit `host`, `port`, `user`, `password`, `database` fields (not from `{ connectionString }` — pg parses the URI last and its `ssl` for `sslmode=verify-full` is `{}`, which would replace our `{ ca }` object and drop the RDS trust chain). `sslmode` picks the TLS shape: `verify-full` and `verify-ca` get `ssl: { ca, rejectUnauthorized: true }` with the CA read from `RDS_CA_PATH` (`/etc/ssl/certs/rds-global-bundle.pem`, overridable in tests via `caPath`); `disable` gets `ssl: false`; `require`, `prefer`, and an absent `sslmode` get `ssl: { rejectUnauthorized: false }`. If the CA file is missing under `verify-full` or `verify-ca` the boot fails with a message naming the sslmode and the path — no silent fallback to an unverified chain. `pg` is CommonJS, so `db.ts` imports it as `import pg from "pg"` and destructures `Pool` off the default; the named-import form dies at load under Node ESM ("does not provide an export named 'Pool'"), which Vitest's interop hides.
+`SIM_DB_CONNECTION` is a libpq URI. `db.ts` parses it with `pg-connection-string` and builds the pool from the explicit `host`, `port`, `user`, `password`, `database` fields (not from `{ connectionString }`; pg parses the URI last and its `ssl` for `sslmode=verify-full` is `{}`, which would replace our `{ ca }` object and drop the RDS trust chain). `sslmode` picks the TLS shape: `verify-full` and `verify-ca` get `ssl: { ca, rejectUnauthorized: true }` with the CA read from `RDS_CA_PATH` (`/etc/ssl/certs/rds-global-bundle.pem`, overridable in tests via `caPath`); `disable` gets `ssl: false`; `require`, `prefer`, and an absent `sslmode` get `ssl: { rejectUnauthorized: false }`. If the CA file is missing under `verify-full` or `verify-ca` the boot fails with a message naming the sslmode and the path ; no silent fallback to an unverified chain. `pg` is CommonJS, so `db.ts` imports it as `import pg from "pg"` and destructures `Pool` off the default; the named-import form dies at load under Node ESM ("does not provide an export named 'Pool'"), which Vitest's interop hides.
 
 ---
 
@@ -184,7 +189,7 @@ Manifest entry `simulator-beacon` (`-dev`), image `simulator-beacon:<sha>-<env>`
 
 | Suite | Covers |
 |---|---|
-| `scheduler` | inter-point delays divided by speed, the 100 ms floor and 30 s ceiling, the first fix immediate, stop at the end, restart from zero, `recordedAt` is now |
+| `scheduler` | inter-point delays divided by speed, the 100 ms floor and 30 s ceiling, the first fix immediate, loop at the end (cycles counted) or stop when loop is off, a speed change re-timing the next delay without a restart, a year change restarting from the first point, restart from zero, `recordedAt` is now |
 | `beacon/sendLoop` | the decision table of contracts 9.2 with a fake hub and fake REST: delivered, rejected on the hub never falls back, HTTP when disconnected, mid-send replacement, `sendsFailedSinceBoot` only with a live event |
 | `beacon/socketLoop` | `connected` only on `joined`, eviction re-join, denied join waits 10 s, close restarts, backoff sequence |
 | `beacon/heartbeat` | body shape validates against the vendored `heartbeat.schema.json`; `401` sets revoked; skew formula |
@@ -204,6 +209,7 @@ Manifest entry `simulator-beacon` (`-dev`), image `simulator-beacon:<sha>-<env>`
 - The control page signs in through the admin pool with its own client and requires the `admin` group; the server checks the ID token itself and never calls the WMSFO API on the operator's behalf.
 - One page, no UI library, the site's tokens copied in.
 - The beacon core is written to contracts 9.2 in TypeScript and copied verbatim into the legacy beacon; the two stay identical by hand.
+- A run loops by default and every control applies while it runs; the row is the only source of truth and the worker follows it every second.
 
 ## 13. Needs a decision
 
