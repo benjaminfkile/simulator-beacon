@@ -49,7 +49,7 @@ function SignedApp() {
   const [authError, setAuthError] = useState<string | null>(null);
   // Boot readiness comes from a shared promise so StrictMode's double-invoke
   // cannot swallow it: the first call starts the work, the second awaits the
-  // same promise. signinRedirectCallback runs at most once — the pool would
+  // same promise. signinRedirectCallback runs at most once; the pool would
   // reject a second attempt at the same auth code.
   const bootPromiseRef = useRef<Promise<BootResult> | null>(null);
 
@@ -224,7 +224,7 @@ function ControlPanel(props: ControlPanelProps) {
         setSelectedSpeed(next.run.speed as Speed);
       }
     } catch (err) {
-      // Polling errors are shown once but not stacked — they auto-clear on the
+      // Polling errors are shown once but not stacked; they auto-clear on the
       // next successful poll.
       if (err instanceof ApiError) {
         setErrorLine(err.message);
