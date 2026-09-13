@@ -126,6 +126,8 @@ insert into sim_run (id) values (1) on conflict do nothing;
 
 The control API updates `status`, `year`, `speed`, `index`, `requested_by`; the leader reads the row every second, acts on a change, and writes `index` every ten fixes plus `leader_state` and `leader_at` every second. Read committed; one row; no locks needed beyond `update ... where id = 1`.
 
+`SIM_DB_CONNECTION` is a libpq URI. `db.ts` parses it with `pg-connection-string` and builds the pool from the explicit `host`, `port`, `user`, `password`, `database` fields (not from `{ connectionString }` — pg parses the URI last and its `ssl` for `sslmode=verify-full` is `{}`, which would replace our `{ ca }` object and drop the RDS trust chain). `sslmode` picks the TLS shape: `verify-full` and `verify-ca` get `ssl: { ca, rejectUnauthorized: true }` with the CA read from `RDS_CA_PATH` (`/etc/ssl/certs/rds-global-bundle.pem`, overridable in tests via `caPath`); `disable` gets `ssl: false`; `require`, `prefer`, and an absent `sslmode` get `ssl: { rejectUnauthorized: false }`. If the CA file is missing under `verify-full` or `verify-ca` the boot fails with a message naming the sslmode and the path — no silent fallback to an unverified chain. `pg` is CommonJS, so `db.ts` imports it as `import pg from "pg"` and destructures `Pool` off the default; the named-import form dies at load under Node ESM ("does not provide an export named 'Pool'"), which Vitest's interop hides.
+
 ---
 
 ## 7. Configuration
