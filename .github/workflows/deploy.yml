@@ -1,0 +1,80 @@
+name: deploy
+
+on:
+  push:
+    branches: [main, dev]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run contracts:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - id: tag
+        run: |
+          env=$([ "${{ github.ref }}" = "refs/heads/main" ] && echo prod || echo dev)
+          echo "image_tag=${{ github.sha }}-${env}" >> "$GITHUB_OUTPUT"
+      - name: docker build
+        run: docker build -t simulator-beacon:${{ steps.tag.outputs.image_tag }} .
+
+  deploy:
+    if: false
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+    steps:
+      - name: assume aws role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: login to ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: push image
+        env:
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          docker tag simulator-beacon:${IMAGE_TAG} ${ECR_REPOSITORY}:${IMAGE_TAG}
+          docker push ${ECR_REPOSITORY}:${IMAGE_TAG}
+      - name: get gateway token
+        id: token
+        env:
+          TOKEN_URL: ${{ secrets.GATEWAY_TOKEN_URL }}
+          CLIENT_ID: ${{ secrets.GATEWAY_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GATEWAY_CLIENT_SECRET }}
+        run: |
+          token=$(curl -sS -X POST "$TOKEN_URL" \
+            -d grant_type=client_credentials \
+            -d scope=mgmt/deploy \
+            -u "$CLIENT_ID:$CLIENT_SECRET" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).access_token))')
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+      - name: deploy to gateway
+        env:
+          GATEWAY_BASE_URL: ${{ secrets.GATEWAY_BASE_URL }}
+          GATEWAY_SERVICE_NAME: ${{ secrets.GATEWAY_SERVICE_NAME }}
+          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+        run: |
+          curl -sS -f -X POST "${GATEWAY_BASE_URL}/mgmt/services/${GATEWAY_SERVICE_NAME}/deploy" \
+            -H "Authorization: Bearer ${{ steps.token.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag\":\"${IMAGE_TAG}\"}"
