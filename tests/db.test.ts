@@ -7,7 +7,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildPoolConfig, createDb, RDS_CA_PATH, type Db } from "../src/db.js";
 
@@ -118,7 +118,8 @@ describe("dist/db.js smoke test (Node ESM, no Vitest interop)", () => {
   has("imports cleanly under a fresh Node process", () => {
     const r = spawnSync(
       process.execPath,
-      ["-e", `import('${distPath.replace(/\\/g, "\\\\")}')`],
+      // A file URL: the ESM loader refuses a bare Windows drive path.
+      ["-e", `import(${JSON.stringify(pathToFileURL(distPath).href)})`],
       { encoding: "utf8" },
     );
     expect(r.status, `stderr:\n${r.stderr}`).toBe(0);
