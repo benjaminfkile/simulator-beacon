@@ -5,6 +5,7 @@ coverage
 .github
 docs
 tests
+web
 *.log
 .env
 .env.*
