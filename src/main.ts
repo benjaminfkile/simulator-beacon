@@ -1,7 +1,6 @@
 // Boot: load config, connect to the database and create the sim_run row when
-// missing, start the health server, start the leader poll, run the beacon core
-// on the leader. The fix source is a stub in B1: B2 wires the flight scheduler
-// and the control API that drives it.
+// missing, start the fastify server (health + control API), start the leader
+// poll, run the beacon core and the worker loop on the leader.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -10,18 +9,25 @@ import pino, { type Logger } from "pino";
 import { loadConfig, ConfigError, type Config } from "./config.js";
 import { createDb, type Db } from "./db.js";
 import { startLeader, type Leader } from "./leader.js";
-import { startHealthServer } from "./health.js";
-import { createBeaconState, type BeaconState } from "./beacon/state.js";
+import {
+  createBeaconState,
+  setLatestFix,
+  type BeaconState,
+} from "./beacon/state.js";
 import { createRest } from "./beacon/rest.js";
 import { buildHubClient, type HubClient } from "./beacon/hub.js";
 import { startSocketLoop, type SocketLoop } from "./beacon/socketLoop.js";
 import { startSendLoop, type SendLoop } from "./beacon/sendLoop.js";
 import { startHeartbeatLoop, type HeartbeatLoop } from "./beacon/heartbeatLoop.js";
+import { createFlightsApi } from "./flights/api.js";
+import { createFlightsCache, type FlightsCache } from "./flights/cache.js";
+import { createAdminAuth } from "./control/auth.js";
+import { buildControlServer } from "./control/routes.js";
+import { startWorker, type WorkerHandle } from "./worker.js";
 
 function readVersion(): string {
   try {
     const here = dirname(fileURLToPath(import.meta.url));
-    // src/main.ts and dist/main.js both sit one level below the repo root.
     const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")) as {
       version?: string;
     };
@@ -46,9 +52,11 @@ function startCore(args: {
   version: string;
   instance: string;
   isLeader: () => boolean;
+  getWorker: () => WorkerHandle | null;
+  cache: FlightsCache;
   log: Logger;
 }): Core {
-  const { config, state, bootMs, version, instance, isLeader, log } = args;
+  const { config, state, bootMs, version, instance, isLeader, getWorker, cache, log } = args;
   const rest = createRest({ apiBaseUrl: config.apiBaseUrl, key: config.beaconKey });
   let hub: HubClient | null = null;
 
@@ -79,32 +87,50 @@ function startCore(args: {
     state,
     rest,
     buildHealth: () => {
-      const lastFixAgeS =
-        state.latestFix ? Math.max(0, Math.floor((Date.now() - Date.parse(state.latestFix.recordedAt)) / 1000)) : null;
+      const lastFixAgeS = state.latestFix
+        ? Math.max(0, Math.floor((Date.now() - Date.parse(state.latestFix.recordedAt)) / 1000))
+        : null;
       return {
         batteryPercent: null,
         lastFixAgeS,
         socketState: state.socketState,
       };
     },
-    buildDebug: () => ({
-      run: null, // B2 fills this from the scheduler and the sim_run row.
-      source: { apiBaseUrl: config.apiBaseUrl },
-      transport: {
-        socketState: state.socketState,
-        reconnectCount: state.reconnectCount,
-        httpFallbackSeconds: state.httpFallbackSeconds,
-        lastReceiptLatencyMs: state.lastReceiptLatencyMs,
-        sendsFailedSinceBoot: state.sendsFailedSinceBoot,
-      },
-      process: {
-        uptimeS: Math.max(0, Math.floor((Date.now() - bootMs) / 1000)),
-        leader: isLeader(),
-        instance,
-        version,
-        node: process.version,
-      },
-    }),
+    buildDebug: () => {
+      const worker = getWorker();
+      const lastLoad = cache.lastLoad();
+      const status = worker?.runningStatus() ?? null;
+      return {
+        run: worker
+          ? {
+              status,
+              index: worker.currentIndex(),
+              total: worker.currentTotal(),
+              nextFixInMs: worker.nextFixInMs(),
+            }
+          : null,
+        source: {
+          apiBaseUrl: config.apiBaseUrl,
+          cachedYears: cache.cachedYears(),
+          lastFlightLoadMs: lastLoad.ms,
+          lastFlightLoadAt: lastLoad.at,
+        },
+        transport: {
+          socketState: state.socketState,
+          reconnectCount: state.reconnectCount,
+          httpFallbackSeconds: state.httpFallbackSeconds,
+          lastReceiptLatencyMs: state.lastReceiptLatencyMs,
+          sendsFailedSinceBoot: state.sendsFailedSinceBoot,
+        },
+        process: {
+          uptimeS: Math.max(0, Math.floor((Date.now() - bootMs) / 1000)),
+          leader: isLeader(),
+          instance,
+          version,
+          node: process.version,
+        },
+      };
+    },
   });
 
   return {
@@ -139,17 +165,55 @@ async function main(): Promise<void> {
   const db: Db = createDb({ connectionString: config.dbConnection });
   await db.init();
 
-  let leader: Leader | null = null;
-  const health = startHealthServer(
-    () => ({
-      configLoaded: true,
-      leaderPolledOnce: leader?.polledOnce() ?? false,
-    }),
-    3000,
-  );
+  const flightsApi = createFlightsApi({
+    apiBaseUrl: config.apiBaseUrl,
+    apiKey: config.apiKey,
+  });
+  const cache = createFlightsCache({ api: flightsApi });
 
+  const auth = createAdminAuth({
+    issuer: config.cognitoIssuer,
+    audiences: config.cognitoClientIds,
+    adminGroup: config.adminGroup,
+  });
+
+  let leader: Leader | null = null;
   const state = createBeaconState();
   let core: Core | null = null;
+  let worker: WorkerHandle | null = null;
+
+  const server = await buildControlServer({
+    db,
+    cache,
+    auth,
+    corsOrigins: config.corsOrigins,
+    probe: () => ({
+      configLoaded: true,
+      leaderPolledOnce: leader?.polledOnce() ?? false,
+      isLeader: leader?.isLeader() ?? false,
+    }),
+    buildBeaconState: () => beaconLeaderState(),
+    instance,
+  });
+
+  await server.listen({ port: 3000, host: "0.0.0.0" });
+
+  function beaconLeaderState(): Record<string, unknown> {
+    const hb = state.lastHeartbeat;
+    const heartbeatAge = hb?.receivedAt
+      ? Math.max(0, Math.floor((Date.now() - Date.parse(hb.receivedAt)) / 1000))
+      : null;
+    return {
+      name: "simulator",
+      isActive: hb?.isActive ?? null,
+      liveEventId: hb?.liveEventId ?? null,
+      socketState: state.socketState,
+      lastDeliveredSeqLocal: state.lastDeliveredSeqLocal,
+      lastReceiptLatencyMs: state.lastReceiptLatencyMs,
+      heartbeatAge,
+      revoked: state.revoked,
+    };
+  }
 
   function startCoreOnce() {
     if (core) return;
@@ -161,7 +225,32 @@ async function main(): Promise<void> {
       version,
       instance,
       isLeader: () => leader?.isLeader() ?? false,
+      getWorker: () => worker,
+      cache,
       log,
+    });
+  }
+
+  function startWorkerOnce() {
+    if (worker) return;
+    log.info("starting worker");
+    worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => beaconLeaderState(),
+      onEmit: ({ point, recordedAtNow }) => {
+        setLatestFix(state, {
+          lat: point.lat,
+          lng: point.lng,
+          recordedAt: recordedAtNow,
+          speedMps: point.speedMps,
+          altitudeM: point.altitudeM,
+          headingDeg: point.headingDeg,
+          accuracyM: point.accuracyM,
+        });
+        core?.sendLoop.wake();
+      },
+      onStop: () => undefined,
     });
   }
 
@@ -175,14 +264,26 @@ async function main(): Promise<void> {
     core = null;
   }
 
+  async function stopWorkerOnce() {
+    if (!worker) return;
+    log.info("stopping worker");
+    await worker.stop();
+    worker = null;
+  }
+
   leader = startLeader({
     gatewayInternalUrl: config.gatewayInternalUrl,
     realtimeToken: config.gatewayRealtimeToken,
     forceLeader: config.forceLeader,
     onChange: (isLeader) => {
       log.info({ isLeader }, "leader change");
-      if (isLeader) startCoreOnce();
-      else void stopCoreOnce();
+      if (isLeader) {
+        startCoreOnce();
+        startWorkerOnce();
+      } else {
+        void stopCoreOnce();
+        void stopWorkerOnce();
+      }
     },
   });
 
@@ -190,7 +291,8 @@ async function main(): Promise<void> {
     log.info({ signal }, "shutdown");
     leader?.stop();
     await stopCoreOnce();
-    await health.close();
+    await stopWorkerOnce();
+    await server.close();
     await db.close();
     process.exit(0);
   };
