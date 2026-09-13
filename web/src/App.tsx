@@ -11,9 +11,16 @@ import { StateCard } from "./StateCard.js";
 type Route = "home" | "callback";
 
 function routeFromLocation(): Route {
-  return typeof window !== "undefined" && window.location.pathname === "/callback"
+  return typeof window !== "undefined" &&
+    window.location.pathname === "/auth/callback"
     ? "callback"
     : "home";
+}
+
+interface BootResult {
+  user: User | null;
+  error: string | null;
+  redirected: boolean;
 }
 
 export function App() {
@@ -40,35 +47,45 @@ function SignedApp() {
   );
   const [authReady, setAuthReady] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string | null>(null);
-  const bootedRef = useRef<boolean>(false);
+  // Boot readiness comes from a shared promise so StrictMode's double-invoke
+  // cannot swallow it: the first call starts the work, the second awaits the
+  // same promise. signinRedirectCallback runs at most once — the pool would
+  // reject a second attempt at the same auth code.
+  const bootPromiseRef = useRef<Promise<BootResult> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    async function boot(): Promise<void> {
-      // React 18's StrictMode runs effects twice in dev; the second callback
-      // would try to reuse an auth code the pool has already rotated.
-      if (bootedRef.current) return;
-      bootedRef.current = true;
-      try {
-        if (route === "callback") {
-          const user = await manager.signinRedirectCallback();
-          if (cancelled) return;
-          setSession(snapshotFromUser(user, ADMIN_GROUP));
-          window.history.replaceState({}, "", "/");
-          setRoute("home");
-        } else {
+    if (!bootPromiseRef.current) {
+      bootPromiseRef.current = (async (): Promise<BootResult> => {
+        try {
+          if (routeFromLocation() === "callback") {
+            const user = await manager.signinRedirectCallback();
+            return { user, error: null, redirected: true };
+          }
           const user = await manager.getUser();
-          if (cancelled) return;
-          setSession(snapshotFromUser(user, ADMIN_GROUP));
+          return { user, error: null, redirected: false };
+        } catch (err) {
+          return {
+            user: null,
+            error: err instanceof Error ? err.message : String(err),
+            redirected: false,
+          };
         }
-      } catch (err) {
-        if (cancelled) return;
-        setAuthError(err instanceof Error ? err.message : String(err));
-      } finally {
-        if (!cancelled) setAuthReady(true);
-      }
+      })();
     }
-    void boot();
+    void bootPromiseRef.current.then((result) => {
+      if (cancelled) return;
+      if (result.error !== null) {
+        setAuthError(result.error);
+      } else {
+        setSession(snapshotFromUser(result.user, ADMIN_GROUP));
+      }
+      if (result.redirected) {
+        window.history.replaceState({}, "", "/");
+        setRoute("home");
+      }
+      setAuthReady(true);
+    });
     const onLoaded = (user: User): void => {
       setSession(snapshotFromUser(user, ADMIN_GROUP));
     };
@@ -169,7 +186,7 @@ function SignedApp() {
       <header className={styles.header}>
         <h1 className={styles.title}>Simulator beacon control</h1>
         <span className={styles.identity}>
-          <span>{session.username ?? session.email ?? "signed in"}</span>
+          <span>{session.email ?? "signed in"}</span>
           <button className={styles.button} onClick={signOut}>
             Sign out
           </button>

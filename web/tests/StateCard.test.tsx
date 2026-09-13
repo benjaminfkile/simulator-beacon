@@ -70,11 +70,11 @@ describe("StateCard", () => {
     expect(screen.getByTestId("run-progress")).toHaveTextContent(
       `${STATE_FIXTURE.run.index} / ${STATE_FIXTURE.run.total}`,
     );
-    // The elapsed field is a rendered duration, not empty (Date is stubbed by
-    // jsdom's Date).
-    expect(screen.getByTestId("run-elapsed").textContent).not.toBe("—");
+    // The elapsed field is a rendered duration, not the empty placeholder
+    // (Date is stubbed by jsdom's Date).
+    expect(screen.getByTestId("run-elapsed").textContent).not.toBe("none");
     // lastError = null in the fixture, so the field renders the placeholder.
-    expect(screen.getByTestId("run-error")).toHaveTextContent("—");
+    expect(screen.getByTestId("run-error")).toHaveTextContent("none");
     // startedAt lands on the progress meta.
     expect(container.textContent ?? "").toContain(
       `started ${STATE_FIXTURE.run.startedAt}`,

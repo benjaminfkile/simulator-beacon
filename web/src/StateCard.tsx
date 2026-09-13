@@ -18,7 +18,7 @@ export interface StateCardProps {
 }
 
 function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (!Number.isFinite(ms) || ms < 0) return "none";
   const s = Math.floor(ms / 1000);
   const hh = Math.floor(s / 3600);
   const mm = Math.floor((s % 3600) / 60);
@@ -94,7 +94,7 @@ export function StateCard(props: StateCardProps) {
     >
       {beacon?.revoked ? (
         <div className={styles.banner} role="alert">
-          Beacon key revoked — the API is refusing this beacon.
+          Beacon key revoked: the API is refusing this beacon.
         </div>
       ) : null}
 
@@ -103,7 +103,7 @@ export function StateCard(props: StateCardProps) {
         <dl className={styles.grid}>
           <dt className={styles.label}>Name</dt>
           <dd className={styles.value} data-testid="beacon-name">
-            {beacon?.name ?? "—"}
+            {beacon?.name ?? "none"}
           </dd>
           <dt className={styles.label}>Status</dt>
           <dd className={styles.value}>
@@ -125,22 +125,22 @@ export function StateCard(props: StateCardProps) {
               className={socketPillClass(beacon?.socketState)}
               data-testid="beacon-socket"
             >
-              {beacon?.socketState ?? "—"}
+              {beacon?.socketState ?? "none"}
             </span>
           </dd>
           <dt className={styles.label}>Last delivered</dt>
           <dd className={styles.value} data-testid="beacon-last-delivered">
-            {beacon?.lastDeliveredSeqLocal ?? "—"}
+            {beacon?.lastDeliveredSeqLocal ?? "none"}
           </dd>
           <dt className={styles.label}>Receipt latency</dt>
           <dd className={styles.value} data-testid="beacon-latency">
             {beacon?.lastReceiptLatencyMs == null
-              ? "—"
+              ? "none"
               : `${beacon.lastReceiptLatencyMs} ms`}
           </dd>
           <dt className={styles.label}>Heartbeat age</dt>
           <dd className={styles.value} data-testid="beacon-heartbeat-age">
-            {beacon?.heartbeatAge == null ? "—" : `${beacon.heartbeatAge} s`}
+            {beacon?.heartbeatAge == null ? "none" : `${beacon.heartbeatAge} s`}
           </dd>
         </dl>
       </div>
@@ -154,16 +154,16 @@ export function StateCard(props: StateCardProps) {
               className={runPillClass(run?.status ?? "stopped")}
               data-testid="run-status"
             >
-              {run?.status ?? "—"}
+              {run?.status ?? "none"}
             </span>
           </dd>
           <dt className={styles.label}>Year</dt>
           <dd className={styles.value} data-testid="run-year">
-            {run?.year ?? "—"}
+            {run?.year ?? "none"}
           </dd>
           <dt className={styles.label}>Speed</dt>
           <dd className={styles.value} data-testid="run-speed">
-            {run == null ? "—" : `${run.speed}x`}
+            {run == null ? "none" : `${run.speed}x`}
           </dd>
           <dt className={styles.label}>Progress</dt>
           <dd className={styles.value} data-testid="run-progress">
@@ -171,11 +171,11 @@ export function StateCard(props: StateCardProps) {
           </dd>
           <dt className={styles.label}>Elapsed</dt>
           <dd className={styles.value} data-testid="run-elapsed">
-            {Number.isFinite(elapsedMs) ? formatDuration(elapsedMs) : "—"}
+            {Number.isFinite(elapsedMs) ? formatDuration(elapsedMs) : "none"}
           </dd>
           <dt className={styles.label}>Last error</dt>
           <dd className={styles.value} data-testid="run-error">
-            {run?.lastError ?? "—"}
+            {run?.lastError ?? "none"}
           </dd>
         </dl>
         <div className={styles.progressWrap}>
@@ -213,7 +213,7 @@ export function StateCard(props: StateCardProps) {
               {years.length === 0 ? <option value="">No years</option> : null}
               {years.map((y) => (
                 <option key={y.year} value={String(y.year)}>
-                  {y.year} — {y.name} ({y.pointCount})
+                  {y.year} {y.name} ({y.pointCount} points)
                 </option>
               ))}
             </select>

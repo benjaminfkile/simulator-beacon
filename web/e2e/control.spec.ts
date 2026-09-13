@@ -34,28 +34,21 @@ test("sign in, start 2025 at 60x, watch running, stop", async ({ page }) => {
 
   await page.getByRole("button", { name: /sign in/i }).click();
 
-  // Cognito hosted UI (the classic template). The field labels are stable but
-  // may drift; fall back to placeholder selectors.
-  await page.locator('input[name="username"], input[type="email"]').first().fill(
+  // Cognito managed login. The admin panel's harness drives the fields by
+  // their form name (stable across the template's label revisions) and the
+  // TOTP field by its role, with one submit click per step.
+  await page.locator('input[name="username"]').fill(
     process.env.E2E_ADMIN_USERNAME!,
   );
-  await page.locator('input[name="password"], input[type="password"]').first().fill(
+  await page.locator('input[name="password"]').fill(
     process.env.E2E_ADMIN_PASSWORD!,
   );
-  await page
-    .getByRole("button", { name: /(sign in|log in|continue)/i })
-    .first()
-    .click();
+  await page.getByRole("button", { name: /sign in/i }).click();
 
   const totp = new TOTP({ secret: process.env.E2E_ADMIN_TOTP_SECRET! });
-  const code = totp.generate();
-  await page.locator('input[name="totpCode"], input[inputmode="numeric"]').first().fill(code);
-  await page
-    .getByRole("button", { name: /(verify|confirm|sign in|continue)/i })
-    .first()
-    .click();
+  await page.getByRole("textbox", { name: /code/i }).fill(totp.generate());
+  await page.getByRole("button", { name: /sign in/i }).click();
 
-  await page.waitForURL("**/");
   await expect(page.getByTestId("year-select")).toBeVisible({ timeout: 30_000 });
 
   await page.getByTestId("year-select").selectOption(YEAR);
