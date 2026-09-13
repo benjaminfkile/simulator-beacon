@@ -8,6 +8,8 @@ export const STATE_FIXTURE: ControlState = {
     status: "running",
     year: 2025,
     speed: 20,
+    loop: true,
+    cycles: 0,
     index: 412,
     total: 1065,
     startedAt: "2025-12-22T01:00:00.000Z",

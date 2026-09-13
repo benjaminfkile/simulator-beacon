@@ -19,8 +19,10 @@ function renderCard(overrides: Partial<Parameters<typeof StateCard>[0]> = {}) {
       years={YEARS}
       selectedYear={2025}
       selectedSpeed={20}
+      selectedLoop
       onYearChange={noop}
       onSpeedChange={noop}
+      onLoopChange={noop}
       onStart={noop}
       onStop={noop}
       onRestart={noop}
@@ -122,5 +124,31 @@ describe("StateCard", () => {
   it("disables Start when no year is selected", () => {
     renderCard({ selectedYear: "" });
     expect(screen.getByTestId("btn-start")).toBeDisabled();
+  });
+
+  it("shows the cycle n badge only when cycles > 0", () => {
+    // The fixture has cycles = 0, so no cycle badge.
+    const { queryByTestId, rerender } = renderCard();
+    expect(queryByTestId("run-cycle")).toBeNull();
+    // A run with cycles = 2 shows "cycle 2" next to the status pill.
+    rerender(
+      <StateCard
+        state={{ ...STATE_FIXTURE, run: { ...STATE_FIXTURE.run, cycles: 2 } }}
+        years={YEARS}
+        selectedYear={2025}
+        selectedSpeed={20}
+        selectedLoop
+        onYearChange={() => {}}
+        onSpeedChange={() => {}}
+        onLoopChange={() => {}}
+        onStart={() => {}}
+        onStop={() => {}}
+        onRestart={() => {}}
+        errorLine={null}
+        busy=""
+        speedOptions={SPEED_OPTIONS}
+      />,
+    );
+    expect(queryByTestId("run-cycle")).toHaveTextContent("cycle 2");
   });
 });

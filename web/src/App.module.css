@@ -233,6 +233,31 @@
   font-family: var(--font-mono);
 }
 
+.cycle {
+  color: var(--color-ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  margin-left: var(--sp-2);
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-solid);
+  border: 1px solid var(--color-border-strong);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--color-ink);
+}
+
+.switchLabel {
+  color: var(--color-ink-muted);
+}
+
 .noRoleLine {
   color: var(--color-warn);
   font-size: var(--fs-sm);

@@ -38,12 +38,19 @@ async function parseError(res: Response): Promise<ApiError> {
   return new ApiError(res.status, code, msg, body);
 }
 
+export interface RunPatch {
+  year?: number;
+  speed?: Speed;
+  loop?: boolean;
+}
+
 export interface ApiClient {
   getState(): Promise<ControlState>;
   getYears(): Promise<YearsResponse>;
   start(body: { year: number; speed: Speed }): Promise<ControlState>;
   stop(): Promise<ControlState>;
   restart(): Promise<ControlState>;
+  patchRun(body: RunPatch): Promise<ControlState>;
 }
 
 export function createApiClient(opts: ApiClientOptions): ApiClient {
@@ -75,5 +82,6 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
     start: (body) => req<ControlState>("POST", "/control/start", body),
     stop: () => req<ControlState>("POST", "/control/stop"),
     restart: () => req<ControlState>("POST", "/control/restart"),
+    patchRun: (body) => req<ControlState>("PATCH", "/control/run", body),
   };
 }

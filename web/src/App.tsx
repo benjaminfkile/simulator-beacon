@@ -209,12 +209,14 @@ export function ControlPanel(props: ControlPanelProps) {
   const [years, setYears] = useState<YearItem[]>([]);
   const [selectedYear, setSelectedYear] = useState<number | "">("");
   const [selectedSpeed, setSelectedSpeed] = useState<Speed>(1);
+  const [selectedLoop, setSelectedLoop] = useState<boolean>(true);
   const [errorLine, setErrorLine] = useState<string | null>(null);
   const [busy, setBusy] = useState<"" | "start" | "stop" | "restart">("");
-  // The selects are seeded once from the row (or the years list) and then
-  // belong to the operator: a poll never overwrites a choice.
+  // The selects and the switch are seeded once from the row (or the years
+  // list) and then belong to the operator: a poll never overwrites a choice.
   const yearSeededRef = useRef<boolean>(false);
   const speedSeededRef = useRef<boolean>(false);
+  const loopSeededRef = useRef<boolean>(false);
 
   const refreshState = useCallback(async (): Promise<void> => {
     try {
@@ -231,6 +233,10 @@ export function ControlPanel(props: ControlPanelProps) {
       ) {
         speedSeededRef.current = true;
         setSelectedSpeed(next.run.speed as Speed);
+      }
+      if (!loopSeededRef.current && typeof next.run.loop === "boolean") {
+        loopSeededRef.current = true;
+        setSelectedLoop(next.run.loop);
       }
     } catch (err) {
       // Polling errors are shown once but not stacked; they auto-clear on the
@@ -342,14 +348,61 @@ export function ControlPanel(props: ControlPanelProps) {
     }
   }, [api]);
 
+  // The selects and the switch are never disabled: while a run is going, a
+  // change sends PATCH /control/run at once and the state line shows it take
+  // effect (simulator-beacon.md 5); while stopped the choice is what Start
+  // will use — the PATCH still lands so the row stays in sync.
+  const patchRun = useCallback(
+    async (body: { year?: number; speed?: Speed; loop?: boolean }): Promise<void> => {
+      try {
+        const next = await api.patchRun(body);
+        setState(next);
+      } catch (err) {
+        if (err instanceof ApiError) {
+          setErrorLine(err.message);
+        } else {
+          setErrorLine(err instanceof Error ? err.message : String(err));
+        }
+      }
+    },
+    [api],
+  );
+
+  const onYearChangeLive = useCallback(
+    (v: number | ""): void => {
+      setSelectedYear(v);
+      if (v === "") return;
+      void patchRun({ year: v });
+    },
+    [patchRun],
+  );
+
+  const onSpeedChangeLive = useCallback(
+    (v: Speed): void => {
+      setSelectedSpeed(v);
+      void patchRun({ speed: v });
+    },
+    [patchRun],
+  );
+
+  const onLoopChangeLive = useCallback(
+    (v: boolean): void => {
+      setSelectedLoop(v);
+      void patchRun({ loop: v });
+    },
+    [patchRun],
+  );
+
   return (
     <StateCard
       state={state}
       years={years}
       selectedYear={selectedYear}
       selectedSpeed={selectedSpeed}
-      onYearChange={setSelectedYear}
-      onSpeedChange={setSelectedSpeed}
+      selectedLoop={selectedLoop}
+      onYearChange={onYearChangeLive}
+      onSpeedChange={onSpeedChangeLive}
+      onLoopChange={onLoopChangeLive}
       onStart={onStart}
       onStop={onStop}
       onRestart={onRestart}

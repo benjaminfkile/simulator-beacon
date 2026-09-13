@@ -40,6 +40,8 @@ function makeFakeDb(initial: Partial<SimRun> = {}): Db {
     status: "stopped",
     year: null,
     speed: 1,
+    loop: true,
+    cycles: 0,
     index: 0,
     total: 0,
     startedAt: null,
@@ -136,7 +138,7 @@ async function inject(
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body != null) headers["Content-Type"] = "application/json";
   return server.inject({
-    method: method as "GET" | "POST",
+    method: method as "GET" | "POST" | "PATCH",
     url: path,
     headers,
     payload: body != null ? JSON.stringify(body) : undefined,
@@ -337,6 +339,79 @@ describe("control API (simulator-beacon.md 5)", () => {
     const res = await inject(server, "POST", "/control/restart", token);
     expect(res.statusCode).toBe(409);
     expect(res.json().code).toBe("no_run");
+    await server.close();
+  });
+
+  it("PATCH /control/run updates speed and returns the row", async () => {
+    const db = makeFakeDb({ status: "running", year: 2025, speed: 20, index: 10 });
+    const server = await buildServer(
+      db,
+      makeFakeCache([{ year: 2025, eventId: 1, name: "2025", pointCount: 1 }]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "PATCH", "/control/run", token, { speed: 5 });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.run.speed).toBe(5);
+    expect(body.run.index).toBe(10);
+    expect(body.run.year).toBe(2025);
+    await server.close();
+  });
+
+  it("PATCH /control/run updates loop and year", async () => {
+    const db = makeFakeDb({ status: "running", year: 2025, speed: 20 });
+    const server = await buildServer(
+      db,
+      makeFakeCache([
+        { year: 2025, eventId: 1, name: "2025", pointCount: 1 },
+        { year: 2024, eventId: 2, name: "2024", pointCount: 1 },
+      ]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "PATCH", "/control/run", token, {
+      year: 2024,
+      loop: false,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.run.year).toBe(2024);
+    expect(body.run.loop).toBe(false);
+    await server.close();
+  });
+
+  it("PATCH /control/run rejects an unknown year with 400 validation_failed", async () => {
+    const server = await buildServer(
+      makeFakeDb({ status: "running", year: 2025, speed: 20 }),
+      makeFakeCache([{ year: 2025, eventId: 1, name: "2025", pointCount: 1 }]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "PATCH", "/control/run", token, { year: 2099 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("validation_failed");
+    await server.close();
+  });
+
+  it("PATCH /control/run rejects a speed outside the set with 400 validation_failed", async () => {
+    const server = await buildServer(
+      makeFakeDb({ status: "running", year: 2025, speed: 20 }),
+      makeFakeCache([{ year: 2025, eventId: 1, name: "2025", pointCount: 1 }]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "PATCH", "/control/run", token, { speed: 3 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("validation_failed");
+    await server.close();
+  });
+
+  it("PATCH /control/run rejects a non-boolean loop with 400 validation_failed", async () => {
+    const server = await buildServer(
+      makeFakeDb({ status: "running", year: 2025, speed: 20 }),
+      makeFakeCache([{ year: 2025, eventId: 1, name: "2025", pointCount: 1 }]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "PATCH", "/control/run", token, { loop: "yes" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("validation_failed");
     await server.close();
   });
 

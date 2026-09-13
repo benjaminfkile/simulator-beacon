@@ -34,6 +34,8 @@ export interface SimRun {
   status: SimRunStatus;
   year: number | null;
   speed: number;
+  loop: boolean;
+  cycles: number;
   index: number;
   total: number;
   startedAt: string | null;
@@ -49,6 +51,8 @@ export interface SimRunUpdate {
   status?: SimRunStatus;
   year?: number | null;
   speed?: number;
+  loop?: boolean;
+  cycles?: number;
   index?: number;
   total?: number;
   startedAt?: string | null;
@@ -80,6 +84,8 @@ create table if not exists sim_run (
   status        text not null default 'stopped' check (status in ('stopped', 'loading', 'running', 'failed')),
   year          integer,
   speed         integer not null default 1,
+  loop          boolean not null default true,
+  cycles        integer not null default 0,
   index         integer not null default 0,
   total         integer not null default 0,
   started_at    timestamptz,
@@ -92,11 +98,22 @@ create table if not exists sim_run (
 );
 `;
 
+// Boot also runs `alter table ... add column if not exists` for the columns
+// added after the initial deploy (simulator-beacon.md 6). Postgres 9.6+ makes
+// `add column if not exists` a no-op when the column already exists, so it is
+// safe to run on every boot.
+const ALTER_ADD_LOOP_SQL = `
+  alter table sim_run add column if not exists loop boolean not null default true;
+`;
+const ALTER_ADD_CYCLES_SQL = `
+  alter table sim_run add column if not exists cycles integer not null default 0;
+`;
+
 const INSERT_ROW_SQL = `insert into sim_run (id) values (1) on conflict do nothing;`;
 
 const SELECT_ROW_SQL = `
-  select status, year, speed, index, total, started_at, last_fix_at, last_error,
-         requested_by, leader_state, leader_at, updated_at
+  select status, year, speed, loop, cycles, index, total, started_at, last_fix_at,
+         last_error, requested_by, leader_state, leader_at, updated_at
     from sim_run where id = 1
 `;
 
@@ -112,6 +129,8 @@ function rowToSimRun(row: Record<string, unknown>): SimRun {
     status: row.status as SimRunStatus,
     year: row.year == null ? null : Number(row.year),
     speed: Number(row.speed ?? 0),
+    loop: row.loop == null ? true : Boolean(row.loop),
+    cycles: Number(row.cycles ?? 0),
     index: Number(row.index ?? 0),
     total: Number(row.total ?? 0),
     startedAt: isoOrNull(row.started_at),
@@ -179,6 +198,8 @@ export function createDb(opts: DbOptions): Db {
   async function init(): Promise<void> {
     await withClient(async (c) => {
       await c.query(CREATE_TABLE_SQL);
+      await c.query(ALTER_ADD_LOOP_SQL);
+      await c.query(ALTER_ADD_CYCLES_SQL);
       await c.query(INSERT_ROW_SQL);
     });
   }
@@ -202,6 +223,8 @@ export function createDb(opts: DbOptions): Db {
     if (patch.status !== undefined) push("status", patch.status);
     if (patch.year !== undefined) push("year", patch.year);
     if (patch.speed !== undefined) push("speed", patch.speed);
+    if (patch.loop !== undefined) push("loop", patch.loop);
+    if (patch.cycles !== undefined) push("cycles", patch.cycles);
     if (patch.index !== undefined) push("index", patch.index);
     if (patch.total !== undefined) push("total", patch.total);
     if (patch.startedAt !== undefined) push("started_at", patch.startedAt);
@@ -210,8 +233,9 @@ export function createDb(opts: DbOptions): Db {
     if (patch.requestedBy !== undefined) push("requested_by", patch.requestedBy);
     sets.push(`updated_at = now()`);
     const sql = `update sim_run set ${sets.join(", ")} where id = 1
-                 returning status, year, speed, index, total, started_at, last_fix_at,
-                          last_error, requested_by, leader_state, leader_at, updated_at`;
+                 returning status, year, speed, loop, cycles, index, total, started_at,
+                          last_fix_at, last_error, requested_by, leader_state,
+                          leader_at, updated_at`;
     return withClient(async (c) => {
       const r = await c.query<Record<string, unknown>>(sql, values);
       const row = r.rows[0];

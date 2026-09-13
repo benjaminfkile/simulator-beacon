@@ -43,6 +43,12 @@ export interface Scheduler {
   running(): boolean;
   currentIndex(): number;
   computeIntervals(): number[];
+  // Change the active speed. When a fix is already pending its delay is
+  // recomputed with the new speed and re-scheduled in place; the current index
+  // is kept (simulator-beacon.md 4: "re-times the next delay with the new
+  // speed and keeps the index").
+  setSpeed(speed: Speed): void;
+  currentSpeed(): Speed;
 }
 
 export function isSpeed(v: unknown): v is Speed {
@@ -83,6 +89,7 @@ export function startScheduler(opts: SchedulerOptions): Scheduler {
   let timer: unknown = null;
   let index = 0;
   let running = false;
+  let speed: Speed = opts.speed;
 
   function schedule(delay: number, fn: () => void): void {
     if (timer) clearTimer(timer);
@@ -100,7 +107,7 @@ export function startScheduler(opts: SchedulerOptions): Scheduler {
     }
     const nextIndex = index + 1;
     const nextFix = opts.points[nextIndex];
-    const nextInMs = nextFix ? intervalMs(opts.points, nextIndex, opts.speed) : null;
+    const nextInMs = nextFix ? intervalMs(opts.points, nextIndex, speed) : null;
     opts.onEmit({
       index,
       point: p,
@@ -146,11 +153,23 @@ export function startScheduler(opts: SchedulerOptions): Scheduler {
     }
   }
 
+  function setSpeed(next: Speed): void {
+    if (next === speed) return;
+    speed = next;
+    if (!running || !timer || index === 0) return;
+    // A timer is pending for the fix at `index`: recompute its delay with the
+    // new speed and re-schedule. The first fix of any run is already 0 ms so
+    // this call is a no-op there.
+    schedule(intervalMs(opts.points, index, speed), tick);
+  }
+
   return {
     start,
     stop,
     running: () => running,
     currentIndex: () => index,
-    computeIntervals: () => computeAllIntervals(opts.points, opts.speed),
+    computeIntervals: () => computeAllIntervals(opts.points, speed),
+    setSpeed,
+    currentSpeed: () => speed,
   };
 }

@@ -51,6 +51,8 @@ export interface WorkerHandle {
 interface ActiveRun {
   year: number;
   speed: Speed;
+  loop: boolean;
+  cycles: number;
   points: LocationRow[];
   scheduler: Scheduler;
   emittedSinceLastPersist: number;
@@ -108,6 +110,23 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
   async function handleEnd(): Promise<void> {
     if (!active) return;
     const total = active.points.length;
+    // Loop at the end (simulator-beacon.md 4): when `loop` is true (the row's
+    // current value), start again from the first point at once with the same
+    // year and speed, and bump `cycles` — persisted on the row. When it is
+    // false the run stops with the index at the last point.
+    if (active.loop) {
+      const nextCycles = active.cycles + 1;
+      active.cycles = nextCycles;
+      active.emittedSinceLastPersist = 0;
+      lastPersistedIndex = 0;
+      try {
+        await opts.db.update({ index: 0, cycles: nextCycles });
+      } catch {
+        // The next tick will re-read; a failure here does not stop the loop.
+      }
+      active.scheduler.start(0);
+      return;
+    }
     active = null;
     try {
       await opts.db.update({ status: "stopped", index: total });
@@ -168,6 +187,8 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     active = {
       year: row.year,
       speed: row.speed as Speed,
+      loop: row.loop,
+      cycles: row.cycles,
       points: flight.points,
       scheduler,
       emittedSinceLastPersist: 0,
@@ -216,6 +237,29 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
         if (!active) {
           const patched: SimRun = { ...row, status: "loading" };
           await loadAndStart(patched);
+          return;
+        }
+        // Compare the row with what is running and apply per section 4:
+        // a new year stops the active run and restarts from the first point;
+        // a new speed re-times the next delay in place; a new loop applies at
+        // the next end. Cycles is authoritative on the row so a follower
+        // taking over never regresses it.
+        if (row.year != null && row.year !== active.year) {
+          await stopActive();
+          const patched: SimRun = { ...row, index: 0, cycles: 0 };
+          await opts.db.update({ index: 0, cycles: 0 }).catch(() => undefined);
+          await loadAndStart(patched);
+          return;
+        }
+        if (isSpeed(row.speed) && (row.speed as Speed) !== active.speed) {
+          active.speed = row.speed as Speed;
+          active.scheduler.setSpeed(row.speed as Speed);
+        }
+        if (row.loop !== active.loop) {
+          active.loop = row.loop;
+        }
+        if (row.cycles !== active.cycles) {
+          active.cycles = row.cycles;
         }
         return;
       }
