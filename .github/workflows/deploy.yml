@@ -81,7 +81,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"tag\":\"${IMAGE_TAG}\"}")
           echo "$resp"
-          id=$(printf '%s' "$resp" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).id||""))}catch{process.stdout.write("")}})')
+          id=$(printf '%s' "$resp" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).deployId||""))}catch{process.stdout.write("")}})')
           echo "deployment_id=$id" >> "$GITHUB_OUTPUT"
       - name: wait for done
         env:
@@ -92,12 +92,12 @@ jobs:
         run: |
           deadline=$((SECONDS + 600))
           while [ $SECONDS -lt $deadline ]; do
-            status=$(curl -sS -f "${GATEWAY_BASE_URL}/mgmt/services/${GATEWAY_SERVICE_NAME}/deployments/${DEPLOYMENT_ID}" \
-              -H "Authorization: Bearer ${TOKEN}" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).status||""))}catch{process.stdout.write("")}})')
+            status=$(curl -sS -f "${GATEWAY_BASE_URL}/mgmt/deploys/${DEPLOYMENT_ID}" \
+              -H "Authorization: Bearer ${TOKEN}" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).deploy.status||""))}catch{process.stdout.write("")}})')
             echo "status=$status"
             case "$status" in
               done) exit 0 ;;
-              failed) echo "deploy failed"; exit 1 ;;
+              failed|partial) echo "deploy $status"; exit 1 ;;
             esac
             sleep 10
           done
