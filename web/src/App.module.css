@@ -1,0 +1,264 @@
+.app {
+  min-height: 100%;
+  padding: var(--sp-6) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-5);
+  background:
+    radial-gradient(1200px 800px at 15% -10%, var(--color-frost-tint), transparent 60%),
+    radial-gradient(900px 700px at 90% 110%, var(--color-frost-tint), transparent 60%),
+    var(--color-bg);
+}
+
+.header {
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  letter-spacing: -0.01em;
+}
+
+.identity {
+  color: var(--color-ink-muted);
+  font-size: var(--fs-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.card {
+  width: 100%;
+  max-width: 720px;
+  padding: var(--sp-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg, var(--color-frost-highlight), transparent 45%),
+    var(--color-surface);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: var(--color-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-lg);
+  color: var(--color-ink);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: var(--sp-5);
+  row-gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.label {
+  color: var(--color-ink-muted);
+  align-self: baseline;
+}
+
+.value {
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  align-self: baseline;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  background: rgba(107, 184, 255, 0.14);
+  color: var(--color-accent);
+  border: 1px solid rgba(107, 184, 255, 0.28);
+}
+
+.pillOk {
+  background: rgba(63, 169, 107, 0.14);
+  color: var(--color-green);
+  border-color: rgba(63, 169, 107, 0.32);
+}
+
+.pillWarn {
+  background: rgba(211, 139, 47, 0.14);
+  color: var(--color-warn);
+  border-color: rgba(211, 139, 47, 0.32);
+}
+
+.pillErr {
+  background: rgba(185, 58, 58, 0.14);
+  color: var(--color-red);
+  border-color: rgba(185, 58, 58, 0.32);
+}
+
+.banner {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-md);
+  background: rgba(185, 58, 58, 0.15);
+  border: 1px solid rgba(185, 58, 58, 0.42);
+  color: var(--color-red);
+  font-weight: 600;
+}
+
+.progressWrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.progressBar {
+  height: 8px;
+  background: var(--color-bg-alt);
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+}
+
+.progressFill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-accent-strong), var(--color-accent));
+  transition: width 400ms ease-out;
+}
+
+.progressMeta {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--color-ink-muted);
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-4);
+}
+
+.controlField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.controlLabel {
+  font-size: var(--fs-xs);
+  color: var(--color-ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.select {
+  appearance: none;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-solid);
+  color: var(--color-ink);
+  border: 1px solid var(--color-border-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  transition: border-color var(--hover-ms) ease;
+  cursor: pointer;
+}
+
+.select:hover,
+.select:focus-visible {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.button {
+  padding: var(--sp-3) var(--sp-5);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-solid);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--hover-ms) ease, background var(--hover-ms) ease;
+}
+
+.button:hover:not(:disabled),
+.button:focus-visible:not(:disabled) {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.buttonPrimary {
+  background: linear-gradient(180deg, var(--color-accent), var(--color-accent-strong));
+  color: var(--color-accent-ink);
+  border-color: var(--color-accent-strong);
+}
+
+.errorLine {
+  color: var(--color-red);
+  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+}
+
+.noRoleLine {
+  color: var(--color-warn);
+  font-size: var(--fs-sm);
+}
+
+.signInWrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-6);
+}
+
+.configHeading {
+  margin-top: 0;
+  font-family: var(--font-display);
+}
+
+.configList {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--color-ink-muted);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
