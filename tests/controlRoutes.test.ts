@@ -87,6 +87,9 @@ function makeFakeCache(
         loadMs: 0,
       };
     },
+    async refresh() {
+      if (opts.throwOnList) throw new Error("boom");
+    },
     cachedYears: () => [],
     lastLoad: () => ({ at: null, ms: null }),
   };

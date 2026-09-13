@@ -95,6 +95,7 @@ function makeCache(points: LocationRow[]): FlightsCache & { loadCalls: number } 
         loadMs: 0,
       };
     },
+    async refresh() {},
     cachedYears: () => [2025],
     lastLoad: () => ({ at: null, ms: null }),
   };
@@ -230,6 +231,7 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
       async loadYear() {
         throw new ApiError(401, "unauthenticated", "key revoked");
       },
+      async refresh() {},
       cachedYears: () => [],
       lastLoad: () => ({ at: null, ms: null }),
     };

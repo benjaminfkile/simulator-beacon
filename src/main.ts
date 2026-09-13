@@ -170,6 +170,16 @@ async function main(): Promise<void> {
     apiKey: config.apiKey,
   });
   const cache = createFlightsCache({ api: flightsApi });
+  // Kick off the initial flight-cache refresh in the background so
+  // `GET /control/years` has real `pointCount` values from the first request
+  // (simulator-beacon.md 4). Errors are logged; `listYears()` will retry on
+  // its own schedule.
+  void cache.refresh().catch((err) =>
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "initial flight cache refresh failed",
+    ),
+  );
 
   const auth = createAdminAuth({
     issuer: config.cognitoIssuer,
