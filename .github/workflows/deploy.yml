@@ -13,10 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: ${{ steps.tag.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,37 +22,40 @@ jobs:
           node-version: "22"
           cache: "npm"
       - run: npm ci
-      - run: npm run contracts:check
+      - name: contracts check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run contracts:check
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - id: tag
-        run: |
-          env=$([ "${{ github.ref }}" = "refs/heads/main" ] && echo prod || echo dev)
-          echo "image_tag=${{ github.sha }}-${env}" >> "$GITHUB_OUTPUT"
-      - name: docker build
-        run: docker build -t simulator-beacon:${{ steps.tag.outputs.image_tag }} .
 
   deploy:
-    if: false
-    needs: build
+    needs: test
+    if: github.event_name == 'push' && github.ref_name == 'dev'
     runs-on: ubuntu-latest
-    environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+    environment: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+    env:
+      IMAGE_TAG: ${{ github.sha }}-${{ github.ref_name == 'main' && 'prod' || 'dev' }}
     steps:
+      - uses: actions/checkout@v4
       - name: assume aws role
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ vars.AWS_REGION }}
       - name: login to ecr
         uses: aws-actions/amazon-ecr-login@v2
-      - name: push image
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: build and push
         env:
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
         run: |
-          docker tag simulator-beacon:${IMAGE_TAG} ${ECR_REPOSITORY}:${IMAGE_TAG}
-          docker push ${ECR_REPOSITORY}:${IMAGE_TAG}
+          docker buildx build \
+            --platform linux/arm64,linux/amd64 \
+            -t ${ECR_REPOSITORY}:${IMAGE_TAG} \
+            --push .
       - name: get gateway token
         id: token
         env:
@@ -69,12 +70,36 @@ jobs:
           echo "::add-mask::$token"
           echo "token=$token" >> "$GITHUB_OUTPUT"
       - name: deploy to gateway
+        id: deploy
         env:
           GATEWAY_BASE_URL: ${{ secrets.GATEWAY_BASE_URL }}
           GATEWAY_SERVICE_NAME: ${{ secrets.GATEWAY_SERVICE_NAME }}
-          IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
+          TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          curl -sS -f -X POST "${GATEWAY_BASE_URL}/mgmt/services/${GATEWAY_SERVICE_NAME}/deploy" \
-            -H "Authorization: Bearer ${{ steps.token.outputs.token }}" \
+          resp=$(curl -sS -f -X POST "${GATEWAY_BASE_URL}/mgmt/services/${GATEWAY_SERVICE_NAME}/deploy" \
+            -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "{\"tag\":\"${IMAGE_TAG}\"}"
+            -d "{\"tag\":\"${IMAGE_TAG}\"}")
+          echo "$resp"
+          id=$(printf '%s' "$resp" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).id||""))}catch{process.stdout.write("")}})')
+          echo "deployment_id=$id" >> "$GITHUB_OUTPUT"
+      - name: wait for done
+        env:
+          GATEWAY_BASE_URL: ${{ secrets.GATEWAY_BASE_URL }}
+          GATEWAY_SERVICE_NAME: ${{ secrets.GATEWAY_SERVICE_NAME }}
+          TOKEN: ${{ steps.token.outputs.token }}
+          DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+        run: |
+          deadline=$((SECONDS + 600))
+          while [ $SECONDS -lt $deadline ]; do
+            status=$(curl -sS -f "${GATEWAY_BASE_URL}/mgmt/services/${GATEWAY_SERVICE_NAME}/deployments/${DEPLOYMENT_ID}" \
+              -H "Authorization: Bearer ${TOKEN}" | node -e 'let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).status||""))}catch{process.stdout.write("")}})')
+            echo "status=$status"
+            case "$status" in
+              done) exit 0 ;;
+              failed) echo "deploy failed"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "deploy did not reach done within 10 minutes"
+          exit 1
