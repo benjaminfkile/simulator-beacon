@@ -302,6 +302,7 @@ Keys appear in this order.
 | `event.endedAt` | `rfc3339 \| null` | Stamped by the API on every entry into status 4; admin-patchable. |
 | `event.fundsPercent` | `int` | 0 to 100. Cheer meter. |
 | `event.routeImageMediaId` | `string \| null` | The event's route poster as a media asset id (a raster asset), resolved through `media`; `null` when none is linked. |
+| `qrCodes` | `{ [tag: string]: { pageSlug: string \| null; forwardUrl: string \| null } }` | Every active printed code (4.5a) already resolved: a page slug (`/` for the home page, else the `none` page's slug), or an off-site URL, never both; the site's `/q/:tag` route reads this and nothing else. Absent tags open the home page. Written by the snapshot builder from `qr_code`, `qr_attachment`, and `place`; the code and place writes marked [snapshot] in 4.5a rebuild it. |
 | `event.flightHistory` | `object \| null` | The flight recording linked to the event (`event.route_id`, 1.4), embedded so the tracker's "flight history" toggle needs no second fetch: `routeId`, `name`, and `points[]` (`lat`, `lng`, `recordedAt`) in route order, thinned by keeping every `ceil(n / flight_history_max_points)`-th point from the first and always the last, so at most `flight_history_max_points` + 1 points (section 6). `null` when no recording is linked. The admin changes it with `PATCH /admin/events/{id} { routeId }`, a snapshot-affecting write, so every new or rebuilt snapshot carries the history the admin chose. |
 | `event.latestMessage` | `object \| null` | The `event_message` with the greatest `created_at` for this event (not `eventTime`; ties on `created_at` broken by greatest `id`), or `null`. |
 | `event.latestMessage.id`, `body`, `eventTime`, `createdAt` | `int64`, `string`, `rfc3339 \| null`, `rfc3339` | As stored. |
@@ -745,7 +746,7 @@ Two pools per environment. The people pool (`wmsfo-dev`, `wmsfo-prod`) carries t
 
 Token lifetimes: ID and access tokens 60 minutes; refresh token 30 days on `wmsfo-site`, 1 day on `wmsfo-admin`.
 
-Both pools' MFA setting is optional with TOTP enabled and SMS disabled. The admin pool's two groups: `admin` (name in `WMSFO_ADMIN_GROUP`, value `admin`) and `editor` (name in `WMSFO_EDITOR_GROUP`, value `editor`). Two authorization policies: `Editor` admits either group, `Admin` admits `admin` only, and both require the token to come from the admin pool; every `/admin/*` endpoint names one (4.5). The API enforces TOTP for both groups: on every `/admin/*` request it calls `AdminGetUser` on the admin pool for the token's `sub` (cached 5 minutes per user) and answers `403 mfa_required` unless `SOFTWARE_TOKEN_MFA` is enabled on the user. This needs `WMSFO_COGNITO_ADMIN_USER_POOL_ID` in the secret and `cognito-idp:AdminGetUser` on the admin pool for the instance role.
+Both pools' MFA setting is optional with TOTP enabled and SMS disabled. The admin pool's three groups: `admin` (name in `WMSFO_ADMIN_GROUP`, value `admin`), `editor` (name in `WMSFO_EDITOR_GROUP`, value `editor`), and `canvasser` (name in `WMSFO_CANVASSER_GROUP`, value `canvasser`: whoever posts stickers; it reaches only the QR codes and places routes of 4.5a and sees only those pages in the panel). Two authorization policies: `Editor` admits either group, `Admin` admits `admin` only, and both require the token to come from the admin pool; every `/admin/*` endpoint names one (4.5). The API enforces TOTP for both groups: on every `/admin/*` request it calls `AdminGetUser` on the admin pool for the token's `sub` (cached 5 minutes per user) and answers `403 mfa_required` unless `SOFTWARE_TOKEN_MFA` is enabled on the user. This needs `WMSFO_COGNITO_ADMIN_USER_POOL_ID` in the secret and `cognito-idp:AdminGetUser` on the admin pool for the instance role.
 
 **Token used on every surface: the ID token.** The site and the admin panel send `Authorization: Bearer <id-token>` to the API. The API validates:
 
@@ -767,7 +768,7 @@ on conflict (cognito_sub) do update set email = excluded.email, last_seen_at = n
 returning id;
 ```
 
-Authorization: an `/admin/*` route under the `Admin` policy requires `cognito:groups` to contain `admin`; one under `Editor` requires `admin` or `editor`; otherwise `403 forbidden`.
+Authorization: an `/admin/*` route under the `Admin` policy requires `cognito:groups` to contain `admin`; one under `Editor` requires `admin` or `editor`; one under `Canvasser` (4.5a) requires `admin`, `editor`, or `canvasser`; otherwise `403 forbidden`.
 
 The admin panel uses `oidc-client-ts` against the admin pool's managed login:
 
@@ -910,7 +911,7 @@ type Sponsor = {
 };
 type SponsorYear = { eventYear: number; amountDonated: number | null; active: boolean; canAdvertise: boolean; anonymous: boolean; pinnedPosition: number | null; lingerMsOverride: number | null; lingerMs: number; registeredAt: string };
                     // lingerMs is the value the snapshot would carry (1.3), computed by the API for the panel to show
-type ApiKeyCapability = "events" | "routes" | "beacons" | "sponsors" | "cookie_types" | "pages" | "sections" | "site_settings" | "content" | "media" | "icons" | "settings" | "contact_messages" | "subscribers" | "people" | "diagnostics" | "audit";
+type ApiKeyCapability = "events" | "routes" | "beacons" | "sponsors" | "cookie_types" | "pages" | "sections" | "site_settings" | "content" | "media" | "icons" | "settings" | "contact_messages" | "subscribers" | "people" | "diagnostics" | "audit" | "qr";
 type ApiKey = { id: number; name: string; keyPrefix: string; allCapabilities: boolean; capabilities: ApiKeyCapability[]; expiresAt: string | null; createdBy: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null; audit: AuditStamp | null };
 type ApiKeyMinted = ApiKey & { key: string };   // the only response that ever carries the full key
 type CookieType = { id: number; name: string; icon: Icon | null; sort: number; active: boolean; cookieCount: number; createdAt: string; updatedAt: string; audit: AuditStamp | null };
@@ -948,7 +949,7 @@ type ContentVersionInfo = { id: number; sha256: string; label: string | null; pu
 type ProblemRef = Problem & { pageId: number | null; sectionId: number | null; itemId: number | null };   // all null: site settings
 type ContentStatus = { published: ContentVersionInfo | null; draftSha256: string; hasUnpublishedChanges: boolean; problems: ProblemRef[]; draftUpdatedAt: string | null };
 type ContentBundle = { content: ContentDocument; media: { [id: string]: MediaEntry }; icons: { [id: string]: string } };
-type PreviewToken = { token: string; url: string; expiresAt: string };
+type PreviewToken = { token: string; url: string; expiresAt: string; audit: AuditStamp | null };
 ```
 
 List endpoints that page use `?limit=` (default 50, max 500) and `?cursor=` (opaque, from `nextCursor`). Lists without `nextCursor` in their response are unpaged.
@@ -1044,6 +1045,8 @@ Rules: `name` 1 to 100, `email` a valid address 3 to 254, `message` 1 to 2000. S
 **`POST /subscriptions/unsubscribe`**. The token comes from either place: the query string `?token=wsu_...` or a JSON body `{ "token": "wsu_..." }`. The query form exists for RFC 8058: the `List-Unsubscribe` header names `https://<api-domain>/subscriptions/unsubscribe?token=wsu_...` and mail clients POST the form body `List-Unsubscribe=One-Click` to it; the API accepts `application/x-www-form-urlencoded` there and ignores the form body. The site page `/alerts/unsubscribe` reads `token` from its query string and sends the JSON form. Sets `unsubscribed_at`. `204`. Idempotent. Unknown token: `404 not_found`.
 
 **`GET /preview/document?token=wpv_...`**. The one public read, used only by the site's `/preview` route inside the admin panel's preview frame (4.5 Content). Answers `200 ContentBundle`: the working set as it would publish (hidden rows omitted), the media map for it, and the icon map, with `Cache-Control: no-store`. Unknown or expired token: `404 preview_token_invalid`. Rate limited per client IP (4.0).
+
+**`POST /qr-codes/{tag}/scans`**. One printed-code visit (4.5a Public). Body `{ "referrer": "https://..." }`, optional. Always `204`. Sent by the site's `/q/:tag` route with `navigator.sendBeacon` before it navigates.
 
 ### 4.4 Registered person endpoints (`Authorization: Bearer <id-token>`)
 
@@ -1276,6 +1279,54 @@ Contact messages and cookie notes have no automatic retention; they stay until a
 | `GET /admin/live` | `200 { "lastWriteAt": rfc3339 or null, "lastWriteSeq": int64 or null, "lastWriteVersion": int64 or null, "lastWriteError": string or null, "lastWriteNode": string or null, "node": { "instance": "<gateway instanceId or null>", "isLeader": bool, "leaderEvaluatedAt": rfc3339 or null, "cacheRefreshedAt": rfc3339, "live": LiveObject } }` (the top-level fields are the fleet-wide `live_state` row, section 5; `node` is the answering node's memory, including its in-memory live object) |
 | `POST /admin/live/republish` | `200 LiveObject` (this node refreshes from SQL, writes the live object, publishes) |
 
+### 4.5a QR codes and places
+
+Printed stickers and the places they hang in (site.md 4 for the public route, admin.md 6.23 to 6.25 for the panel). A **code** is a permanent tag (`qr-001`, sequential) printed at `https://<site-domain>/q/<tag>`; a **place** is a node of a tree of friendly names, any depth, with a note and an optional pin; an **attachment** says which place a code hangs in from when to when; a **scan** is one visit to the printed address. Codes and places each may set what a visit opens: a site page or an off-site URL; a code resolves its own setting, else the nearest ancestor place's, else the home page. The snapshot carries every active code already resolved (1.3), so the site never asks the API what to show.
+
+**Roles.** The admin pool's third group is `canvasser` (3.1). The `Canvasser` policy admits `admin`, `editor`, and `canvasser` to every route in this section except the two deletes, which stay `Admin`. TOTP as for every admin route. API keys reach these routes with the `qr` capability (3.6).
+
+| Method and path | Body | Success | Errors |
+|---|---|---|---|
+| `GET /admin/qr-codes` | | `200 { "items": QrCode[] }` by tag | |
+| `POST /admin/qr-codes` | `{ "count": 10 }` (1 to 100) | `201 { "items": QrCode[] }`: the next tags minted in a new batch (`batchNo` one past the highest, `printedAt` now), unattached, active, opening the home page | `400 validation_failed` |
+| `GET /admin/qr-codes/{id}` | | `200 QrCodeDetail` (the code, its attachment history with the people count of each stay, the daily counts of the last 14 days) | `404` |
+| `PATCH /admin/qr-codes/{id}` **[snapshot]** | any of `opensPageId` (a page id, or null for "same as the place"), `forwardUrl` (an absolute https URL, or null), `note` (0 to 500), `active` | `200 QrCode`; `opensPageId` and `forwardUrl` cannot both be set (`400`) | `404`, `400 validation_failed` |
+| `POST /admin/qr-codes/{id}/attach` **[snapshot]** | `{ "placeId": 4 }` | `200 QrCode`: closes the open attachment (`toAt = now`) and opens a new one; scans of this code from the hour before with no attachment are stamped onto the new one | `404` (code or place) |
+| `POST /admin/qr-codes/{id}/detach` **[snapshot]** | none | `200 QrCode` (idempotent) | `404` |
+| `DELETE /admin/qr-codes/{id}` **[snapshot]**, admin only | | `204`; its attachments and scans go with it | `404` |
+| `GET /admin/places` | | `200 { "items": Place[] }` in tree order (parents before children, siblings by name), each with its resolved pin and opens | |
+| `POST /admin/places` **[snapshot]** | `{ "parentId": null, "name": "Southgate Mall", "description": "Main level, both wings", "opensPageId": null, "forwardUrl": null }` (`name` 1 to 120 unique among siblings, `description` 0 to 500) | `201 Place` | `400 validation_failed`, `404` (parent), `409 place_name_taken` |
+| `PATCH /admin/places/{id}` **[snapshot]** | any of `parentId` (null for the root), `name`, `description`, `opensPageId`, `forwardUrl` | `200 Place` | `404`, `400 place_cycle` (a place cannot move under itself or its descendants), `409 place_name_taken` |
+| `PUT /admin/places/{id}/location` | `{ "lat": 46.916, "lng": -114.039, "accuracyM": 140, "source": "phone" }` (`source` one of `phone`, `search`, `drag`; `accuracyM` null unless `phone`) | `200 Place` | `404`, `400 validation_failed` |
+| `DELETE /admin/places/{id}/location` | | `200 Place` (no pin; the parent's applies) | `404` |
+| `DELETE /admin/places/{id}` **[snapshot]**, admin only | | `204` | `404`, `409 place_has_children`, `409 place_has_codes` (an open attachment) |
+| `GET /admin/places/map?eventId=&from=&to=` | | `200 { "items": PlacePin[] }`: one entry per pinned place with the people count under it (the subtree's scans in the window, attributed by the scan's event when `eventId` is given), plus `unpinned` (places with scans and no resolved pin) and `unattached` (scans on codes with no attachment) counts | `400 validation_failed` |
+
+Not snapshot-affecting: the location PUT and DELETE (pins never reach the site) and everything under `/qr-codes/{tag}/scans`.
+
+**Public.** `POST /qr-codes/{tag}/scans` (4.3): no auth, body `{ "referrer": "https://..." }` optional; the API records the scan against the code and its open attachment with the user agent, the referrer, a salted hash of the client IP, and the current event's id; flags `isBot` from the user agent (a fixed list of crawler markers) and `isRepeat` when the same IP hash and user agent scanned the same code within ten seconds; answers `204` whether or not the tag exists or is active, so the address reveals nothing. Rate limit as `POST /contact`. Counts everywhere are unflagged rows ("people").
+
+**Resolution.** `opens` on a code or place is one of: a page (`opensPageId` naming a non-hidden `none` page or a role page's slug `/`), a forward (`forwardUrl`), or unset. A code resolves its own setting, else the nearest ancestor of its open attachment's place that sets one (the attached place first), else the home page. A place's pin resolves the same way: its own, else the nearest ancestor's, else none.
+
+```ts
+type Opens = { kind: "home" } | { kind: "page"; pageId: number; slug: string } | { kind: "url"; url: string };
+type QrCode = { id: number; tag: string; batchNo: number; printedAt: string; active: boolean; note: string;
+                opensPageId: number | null; forwardUrl: string | null; opens: Opens; opensSource: "code" | "place" | "home";
+                attachment: { id: number; placeId: number; placePath: string[]; since: string } | null;
+                scans: { people: number; flagged: number; lastScanAt: string | null };
+                createdBy: string; createdAt: string; updatedAt: string; audit: AuditStamp | null };
+type QrCodeDetail = QrCode & { history: { attachmentId: number; placeId: number; placePath: string[]; fromAt: string; toAt: string | null; people: number; earlyScans: number }[];
+                               daily: { day: string; people: number }[] };
+type Place = { id: number; parentId: number | null; name: string; description: string; path: string[];
+               opensPageId: number | null; forwardUrl: string | null; opens: Opens; opensSource: "place" | "ancestor" | "home";
+               location: { lat: number; lng: number; accuracyM: number | null; source: "phone" | "search" | "drag"; pinnedBy: string; pinnedAt: string } | null;
+               pin: { lat: number; lng: number; fromPlaceId: number } | null;
+               codes: { id: number; tag: string }[]; scans: { people: number };   // the subtree
+               createdBy: string; createdAt: string; updatedAt: string; audit: AuditStamp | null };
+type PlacePin = { placeId: number; name: string; path: string[]; lat: number; lng: number; people: number;
+                  codes: { tag: string; placeName: string; people: number }[] };
+```
+
 **Audit.** Every admin write (every `POST`, `PATCH`, `PUT`, `DELETE` under `/admin/*`, whoever the caller is) records one `audit_log` row inside its own transaction: the actor (`person:<email>` for an ID token, `key:<name>` for an API key), the action, the entity kind and id, the resource as it was before and as it is after (the same shapes the endpoints answer with; `before` is null on create, `after` is null on delete), and the request id. Lists and details of audited resources carry `audit: AuditStamp | null` (the newest row for that entity; null for a row older than the log).
 
 | Method and path | Body | Success | Errors |
@@ -1283,7 +1334,7 @@ Contact messages and cookie notes have no automatic retention; they stay until a
 | `GET /admin/audit?entity=&entityId=&action=&actor=&cursor=&limit=` | | `200 Page<AuditEntry>` newest first, `limit` 1 to 200 (default 50); every filter optional; `entity` and `entityId` together give one row's history; `action=delete` alone lists what was deleted anywhere | `400 validation_failed` |
 | `GET /admin/audit/entities` | | `200 { "items": string[] }`: the entity kinds the log knows | |
 
-Actions are `create`, `update`, `delete` for the generic writes and the endpoint's own verb otherwise: `status`, `notify`, `current`, `clone`, `activate`, `deactivate`, `revoke`, `rotate`, `order`, `copy`, `import`, `confirm`, `publish`, `restore`, `move`, `duplicate`, `enroll`. Entities: `event`, `event_message`, `route`, `beacon`, `sponsor`, `sponsor_year`, `sponsor_order`, `cookie_type`, `api_key`, `person`, `subscriber`, `contact_message`, `setting`, `page`, `section`, `section_item`, `site_settings`, `content_version`, `media_asset`. The log is never pruned.
+Actions are `create`, `update`, `delete` for the generic writes and the endpoint's own verb otherwise: `status`, `notify`, `current`, `clone`, `activate`, `deactivate`, `revoke`, `rotate`, `order`, `copy`, `import`, `confirm`, `publish`, `restore`, `move`, `duplicate`, `enroll`. Entities: `event`, `event_message`, `route`, `beacon`, `sponsor`, `sponsor_year`, `sponsor_order`, `cookie_type`, `api_key`, `person`, `subscriber`, `contact_message`, `setting`, `page`, `section`, `section_item`, `site_settings`, `content_version`, `media_asset`, `qr_code`, `place`. The log is never pruned.
 
 ### 4.6 Internal gateway callbacks
 
@@ -1308,6 +1359,9 @@ Actions are `create`, `update`, `delete` for the generic writes and the endpoint
 | `event_live` | 409 | cookie type writes while an event is live; deleting a live event |
 | `event_has_locations` | 409 | `DELETE /admin/events/{id}` |
 | `year_taken` | 409 | event create, patch, and clone |
+| `place_cycle` | 400 | `PATCH /admin/places/{id}` moving a place under itself |
+| `place_name_taken` | 409 | place create and patch (unique among siblings) |
+| `place_has_children`, `place_has_codes` | 409 | `DELETE /admin/places/{id}` |
 | `year_exists` | 409 | `POST /admin/sponsors/{id}/years/{eventYear}/copy-from/{sourceYear}` when the sponsor already has `eventYear` |
 | `route_in_use` | 409 | `DELETE /admin/routes/{id}` |
 | `pinned_position_taken` | 409 | `PUT /admin/sponsors/{id}/years/{eventYear}` |
@@ -1724,6 +1778,69 @@ create table audit_log (
 );
 create index audit_log_entity on audit_log (entity, entity_id, id desc);
 create index audit_log_action on audit_log (action, id desc);
+
+create table place (
+  id            bigint generated always as identity primary key,
+  parent_id     bigint references place (id) on delete restrict,
+  name          text not null,
+  description   text not null default '',
+  opens_page_id bigint references page (id) on delete set null,
+  forward_url   text,
+  lat           double precision,
+  lng           double precision,
+  accuracy_m    double precision,
+  pin_source    text check (pin_source in ('phone', 'search', 'drag')),
+  pinned_by     text,
+  pinned_at     timestamptz,
+  created_by    text not null,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  check ((opens_page_id is null) or (forward_url is null)),
+  check ((lat is null) = (lng is null) and (lat is null) = (pin_source is null))
+);
+create unique index place_sibling_name on place (coalesce(parent_id, 0), lower(name));
+
+create table qr_code (
+  id            bigint generated always as identity primary key,
+  tag           text not null unique,             -- qr-001, sequential
+  batch_no      integer not null,
+  printed_at    timestamptz not null default now(),
+  active        boolean not null default true,
+  note          text not null default '',
+  opens_page_id bigint references page (id) on delete set null,
+  forward_url   text,
+  created_by    text not null,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  check ((opens_page_id is null) or (forward_url is null))
+);
+
+create table qr_attachment (
+  id          bigint generated always as identity primary key,
+  qr_code_id  bigint not null references qr_code (id) on delete cascade,
+  place_id    bigint not null references place (id) on delete restrict,
+  from_at     timestamptz not null default now(),
+  to_at       timestamptz,
+  attached_by text not null
+);
+create unique index qr_attachment_open on qr_attachment (qr_code_id) where to_at is null;
+create index qr_attachment_place on qr_attachment (place_id, from_at desc);
+
+create table qr_scan (
+  id            bigint generated always as identity primary key,
+  qr_code_id    bigint not null references qr_code (id) on delete cascade,
+  attachment_id bigint references qr_attachment (id) on delete set null,
+  event_id      bigint references event (id) on delete set null,
+  at            timestamptz not null default now(),
+  user_agent    text,
+  referrer      text,
+  ip_hash       char(64) not null,                   -- sha256 of salt and client IP; the salt is WMSFO_SCAN_SALT
+  is_bot        boolean not null default false,
+  is_repeat     boolean not null default false
+);
+create index qr_scan_code_at on qr_scan (qr_code_id, at desc);
+create index qr_scan_attachment on qr_scan (attachment_id, at desc);
+create index qr_scan_event on qr_scan (event_id, at desc);
 ```
 
 Plain `lat`/`lng` columns; no PostGIS. `seq` is per event from `event.next_seq`, assigned under the event row lock, so seq order is commit order. Soft delete exists only on `cookie` (`hidden_at`); every other delete is hard. The content working set is `page`, `section`, `section_item`, and `site_setting_draft`; `content_version` holds published documents; `media_asset` is the media library; `preview_token` and `icon_library_state` are plumbing. First boot seeds the six role pages and the starter content and publishes version 1 before building snapshot version 1 (sql.md 6 and 8.16).
@@ -1875,6 +1992,8 @@ Unsubscribe link in the body: `https://<site-domain>/alerts/unsubscribe?token=ws
   "WMSFO_COGNITO_ADMIN_USER_POOL_ID": "<admin-pool-id>",
   "WMSFO_ADMIN_GROUP": "admin",
   "WMSFO_EDITOR_GROUP": "editor",
+  "WMSFO_CANVASSER_GROUP": "canvasser",
+  "WMSFO_SCAN_SALT": "<random string; salts the scan IP hash>",
   "WMSFO_SES_FROM_ADDRESS": "Santa Tracker <alerts@<mail-domain>>",
   "WMSFO_SES_CONFIGURATION_SET": "",
   "WMSFO_CONTACT_NOTIFY_EMAIL": "<inbox-address>",
@@ -2213,6 +2332,8 @@ Tests the artifacts drive: Vitest on the site store, page selection, section reg
 - A person can read the alerts sent to them (`GET /me/alerts`); the site shows that history on the alerts page.
 - Sponsor years copy forward per sponsor or in bulk; an event clones with its sponsors, recording, and poster as the admin ticks.
 - Poster tiles are lossless PNG at the poster's own pixels and the viewer never zooms past 1:1; earlier JPEG pyramids stay valid through their descriptor.
+- Printed QR codes are permanent numbered tags at `/q/<tag>`, printed in batches at any size; places are a tree with a note and an optional pin; an attachment is the history; scans count against the code and roll up the tree; the snapshot carries every active code resolved so the site never asks the API what to open; the only public write is the scan beacon, always `204`.
+- A third admin-pool group, `canvasser`, reaches exactly the QR and places routes; deletes stay admin.
 
 ## 15. Needs a decision
 
