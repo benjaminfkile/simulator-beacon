@@ -15,7 +15,10 @@
     "contracts:check": "node scripts/check-contracts.mjs"
   },
   "dependencies": {
+    "@fastify/cors": "^9.0.1",
     "@microsoft/signalr": "8.0.7",
+    "fastify": "^4.29.1",
+    "jose": "^6.2.12",
     "pg": "8.13.1",
     "pino": "9.5.0"
   },
