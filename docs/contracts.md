@@ -275,11 +275,12 @@ Rules:
     "8c1d5e2a-7b3f-4c9e-9a1d-2f6e8b4c0a11": {
       "url": "https://<cdn-domain>/media/8c1d5e2a-7b3f-4c9e-9a1d-2f6e8b4c0a11/hangar.jpg",
       "kind": "raster", "width": 2400, "height": 1600, "alt": "The helicopter in its hangar",
-      "variants": { "480": "https://<cdn-domain>/media/8c1d.../w480.webp", "960": "https://<cdn-domain>/media/8c1d.../w960.webp", "1600": "https://<cdn-domain>/media/8c1d.../w1600.webp" }
+      "variants": { "480": "https://<cdn-domain>/media/8c1d.../w480.webp", "960": "https://<cdn-domain>/media/8c1d.../w960.webp", "1600": "https://<cdn-domain>/media/8c1d.../w1600.webp" },
+      "dzi": "https://<cdn-domain>/media/8c1d5e2a-7b3f-4c9e-9a1d-2f6e8b4c0a11/dzi/poster.dzi"
     },
     "3b7e9c10-2d4f-4a8b-b6c1-9e0f7d5a2c33": {
       "url": "https://<cdn-domain>/media/3b7e9c10-2d4f-4a8b-b6c1-9e0f7d5a2c33/gingerbread.svg",
-      "kind": "svg", "width": null, "height": null, "alt": "Gingerbread cookie", "variants": {}
+      "kind": "svg", "width": null, "height": null, "alt": "Gingerbread cookie", "variants": {}, "dzi": null
     }
   },
   "icons": {
