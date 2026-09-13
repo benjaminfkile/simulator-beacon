@@ -1,0 +1,17 @@
+# docs/simulator-beacon.md 10: local Postgres with the two roles and the
+# database wmsfo_sim_dev, no TLS. .env.local sets SIM_DB_CONNECTION with
+# sslmode=disable so db.ts loads no CA.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - simpgdata:/var/lib/postgresql/data
+      - ./dev/db-init:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  simpgdata:
