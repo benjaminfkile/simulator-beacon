@@ -302,7 +302,7 @@ Keys appear in this order.
 | `event.endedAt` | `rfc3339 \| null` | Stamped by the API on every entry into status 4; admin-patchable. |
 | `event.fundsPercent` | `int` | 0 to 100. Cheer meter. |
 | `event.routeImageMediaId` | `string \| null` | The event's route poster as a media asset id (a raster asset), resolved through `media`; `null` when none is linked. |
-| `qrCodes` | `{ [tag: string]: { pageSlug: string \| null; forwardUrl: string \| null } }` | Every active printed code (4.5a) already resolved: a page slug (`/` for the home page, else the `none` page's slug), or an off-site URL, never both; the site's `/q/:tag` route reads this and nothing else. Absent tags open the home page. Written by the snapshot builder from `qr_code`, `qr_attachment`, and `place`; the code and place writes marked [snapshot] in 4.5a rebuild it. |
+| `qrCodes` | `{ [tag: string]: { pageSlug: string \| null; forwardUrl: string \| null } }` | Every active printed code (4.5a) already resolved, the ones that open the home page included (`pageSlug` `/`): a page slug (`/` for the home page, else the `none` page's slug), or an off-site URL, never both; the site's `/q/:tag` route reads this and nothing else. Absent tags open the home page. Written by the snapshot builder from `qr_code`, `qr_attachment`, and `place`; the code and place writes marked [snapshot] in 4.5a rebuild it. |
 | `event.flightHistory` | `object \| null` | The flight recording linked to the event (`event.route_id`, 1.4), embedded so the tracker's "flight history" toggle needs no second fetch: `routeId`, `name`, and `points[]` (`lat`, `lng`, `recordedAt`) in route order, thinned by keeping every `ceil(n / flight_history_max_points)`-th point from the first and always the last, so at most `flight_history_max_points` + 1 points (section 6). `null` when no recording is linked. The admin changes it with `PATCH /admin/events/{id} { routeId }`, a snapshot-affecting write, so every new or rebuilt snapshot carries the history the admin chose. |
 | `event.latestMessage` | `object \| null` | The `event_message` with the greatest `created_at` for this event (not `eventTime`; ties on `created_at` broken by greatest `id`), or `null`. |
 | `event.latestMessage.id`, `body`, `eventTime`, `createdAt` | `int64`, `string`, `rfc3339 \| null`, `rfc3339` | As stored. |
@@ -880,6 +880,8 @@ Shared resource shapes (all camelCase, all timestamps rfc3339). Column-to-wire m
 
 ```ts
 type AuditStamp = { action: string; by: string; at: string };
+type ImpactGroup = { entity: string; count: number; names: string[] };   // names: up to ten, in id order
+type DeleteImpact = { blocked: string | null; deletes: ImpactGroup[]; unlinks: ImpactGroup[]; warnings: string[] };   // blocked: the sentence explaining why the delete is refused (the live or current event), else null
 type AuditEntry = { id: number; at: string; actor: string; action: string; entity: string; entityId: string; before: object | null; after: object | null; requestId: string | null };
 type AlertItem = { id: number; subscriptionId: number; address: string; kind: "event_status" | "event_message"; eventId: number; eventName: string; statusId: number | null; messageId: number | null; subject: string; sentAt: string };
 type Event = {
@@ -1085,7 +1087,7 @@ Each group of endpoints names its policy (3.1): **Editor** admits both groups, *
 | `POST /admin/events` **[snapshot]** | `{ "year": 2026, "name": "...", "scheduledAt": null, "fundsPercent": 0, "routeId": null, "inheritRoute": true }` (`year`, `name`, `inheritRoute` required; `scheduledAt` defaults null; `fundsPercent` defaults 0; `routeId` defaults null; `year` 2000 to 2100 unique; `name` 1 to 200; `fundsPercent` 0 to 100) | `201 Event` with `statusId` 1, `isCurrent` false. `inheritRoute: true` requires `routeId` null (`400` otherwise) and copies the `route_id` of the event with the greatest `year` that has one (none: no route); `inheritRoute: false` uses `routeId` as given. The route image is never inherited; `route_image_media_id` starts null and is set with `PATCH`. | `400`, `404 not_found` (routeId), `409 year_taken` |
 | `GET /admin/events/{id}` | | `200 Event` | |
 | `PATCH /admin/events/{id}` **[snapshot]** | Any of `name`, `year`, `scheduledAt`, `wentLiveAt`, `endedAt`, `fundsPercent`, `routeId`, `routeImageMediaId` (a ready raster media asset id; an empty string unlinks; null or absent leaves it unchanged, the same convention as `logoMediaId`) | `200 Event` | `404` (event, route, or media), `409 year_taken`, `409 scheduled_at_required` (`scheduledAt: null` while `statusId` is 2), `409 media_not_ready`, `400 validation_failed` (an svg or gif asset as the route image) |
-| `DELETE /admin/events/{id}` **[snapshot]** | | `204`; cascades messages, cookies, status history; clears `is_current` | `409 event_live` (status 3), `409 event_has_locations` (any `location` row) |
+| `DELETE /admin/events/{id}` **[snapshot]** | | `204`; deletes its messages, cookies, status history, locations, and pending alert outbox rows | `404`, `409 event_live` (status 3), `409 event_current` (`isCurrent`; make another event current first) |
 | `POST /admin/events/{id}/current` **[snapshot]** | none | `200 Event` (`isCurrent` true; the previous current event's flag cleared in the same transaction). Idempotent: on the already-current event, `200 Event` with no snapshot rebuild and no live-object write, in every status. | `409 current_event_live` (another event is current and live) |
 | `POST /admin/events/{id}/status` **[snapshot]** | `{ "statusId": 3, "notify": true, "message": null }` (`statusId` and `notify` required; `message` optional, 1 to 1000 characters, the custom text the alert carries instead of the stock paragraph, ignored when `notify` is false) | `200 Event` | `400` (unknown status), `409 event_status_unchanged` (same status), `409 event_not_current` (3 requested and `isCurrent` false), `409 another_event_live` (3 requested while another event has status 3), `409 scheduled_at_required` (2 requested and `scheduledAt` null), `409 no_healthy_beacon` (3 requested and no beacon is active, or the active beacon is revoked or stale; `details.beacon` carries the active beacon's `id`, `name`, `lastSeenAt`, `staleSince`, or null when none is active) |
 | `GET /admin/events/{id}/status-history` | | `200 { "items": StatusHistory[] }` newest first, each with whether subscribers were notified and how many emails went out | |
@@ -1109,7 +1111,7 @@ Flight recordings (1.4). Not shown on the site; used by Red-Nose replay, exports
 | `GET /admin/routes/{id}` | | `200 Route` | |
 | `POST /admin/routes` | `{ "name": "2026 draft", "points": [ { "lat", "lng", "recordedAt" } ] }` per 1.4 | `201 Route`. Canonicalizes and hashes (1.6), looks `route` up by `s3_key` before the PUT (when a row exists: `200` that row and nothing is written), PUTs `routes/{sha256}.json`, inserts the row. When the insert after the PUT fails on `s3_key unique` (concurrent identical upload): `200` the existing row. | `400`, `413`, `502 route_write_failed` |
 | `POST /admin/routes/from-event/{eventId}` | `{ "name": "2026 flight" }` (`name` 1 to 200) | `201 Route` built from the event's `published = true` locations in `seq` order (`lat`, `lng`, `recordedAt = recorded_at`), then stored exactly like an upload (canonicalize, hash, existing-row check, PUT, insert). Point count must be 2 to 50,000. | `404` (event), `400 validation_failed` (fewer than 2 points), `413` (over 50,000), `502 route_write_failed` |
-| `DELETE /admin/routes/{id}` | | `204`; deletes the object | `409 route_in_use` (an event references it) |
+| `DELETE /admin/routes/{id}` | | `204`; deletes the object; events that used it lose their recording (`routeId` null, listed under `unlinks`) | `404` |
 
 Attaching a route to an event is `PATCH /admin/events/{id}` with `routeId`.
 
@@ -1163,7 +1165,7 @@ An API key request on these three endpoints is `403 forbidden` whatever its capa
 | `GET /admin/cookie-types` | | `200 { "items": CookieType[] }` by `sort`, `id` | |
 | `POST /admin/cookie-types` **[snapshot]** | `{ "name": "...", "sort": 10, "active": true, "icon": null }` (`name` 1 to 100; `sort` -1000 to 1000; `icon` an `Icon` or null; all four required) | `201 CookieType` | `409 event_live`, `404` (media icon), `409 media_not_ready`, `400` (media icon not svg, unknown library id) |
 | `PATCH /admin/cookie-types/{id}` **[snapshot]** | subset of `name`, `sort`, `active`, `icon` | `200 CookieType` | `404`, `409 event_live`, `409 media_not_ready`, `400` |
-| `DELETE /admin/cookie-types/{id}` **[snapshot]** | | `204` | `404`, `409 event_live`, `409 cookie_type_in_use` (`details.cookieCount` cookies reference it; deactivate it instead) |
+| `DELETE /admin/cookie-types/{id}` **[snapshot]** | | `204`; its cookies are deleted with it (the tallies drop by their count, live or not; the impact says how many and warns while live) | `404` |
 
 Every write in this group returns `409 event_live` while any event has `status_id = 3`. A type is deleted only while no cookie references it; `active: false` removes a type from the snapshot without deleting it. Artwork is an icon: a library id or an uploaded SVG media asset.
 
@@ -1177,7 +1179,7 @@ Pages, sections, items, and the site settings draft are the working set. Writes 
 | `POST /admin/pages` | `{ "slug": "about", "title": "About", "navLabel": "About", "navPosition": 10, "isHidden": false }` (`slug`, `title` required; `title` 1 to 200; `navLabel` null or 1 to 40; `navPosition` defaults to one past the greatest; role is always `none`) | `201 PageAdmin` | `400 slug_reserved`, `409 slug_taken` |
 | `GET /admin/pages/{id}` | | `200 PageDetail` (sections with items in order, each with its publish-level `problems`) | `404` |
 | `PATCH /admin/pages/{id}` | subset of `slug`, `title`, `navLabel`, `navPosition`, `isHidden` | `200 PageAdmin`. On a role page `navLabel` must stay null and `isHidden` false (`400`). | `404`, `400 slug_reserved`, `409 slug_taken` |
-| `DELETE /admin/pages/{id}` | | `204`; cascades sections and items | `404`, `409 page_has_role` |
+| `DELETE /admin/pages/{id}?roleTo=` | | `204`; cascades sections and items; a page holding a role hands it to the page named by `roleTo` first (the impact warns which role) | `404`, `400 role_needs_page` (the page holds a role and `roleTo` is missing or not another page) |
 | `PUT /admin/pages/order` | `{ "ids": [3, 5, 4] }` (every `none` page exactly once) | `200 { "items": PageAdmin[] }`; `navPosition` becomes the index times 10 | `400` |
 
 The six role pages are created by the seed (sql.md 6) with slugs `no-event`, `planned`, `scheduled`, `live`, `ended`, `cancelled`; their role never changes and they cannot be deleted. Reaching `/<slug>` of a role page on the site redirects to `/`.
@@ -1233,7 +1235,7 @@ The pipeline is presign, upload, confirm. Media bytes never pass through the API
 | `GET /admin/media/{id}` | | `200 MediaAsset` | `404` |
 | `GET /admin/media/{id}/usage` | | `200 MediaUsage` | `404` |
 | `PATCH /admin/media/{id}` **[snapshot]** | subset of `alt`, `title` | `200 MediaAsset` | `404` |
-| `DELETE /admin/media/{id}` | | `204`; deletes every object under `media/{id}/` and the row, in any state | `404`, `409 media_in_use` (`details.usage: MediaUsage`) |
+| `DELETE /admin/media/{id}` | | `204`; deletes every object under `media/{id}/` and the row, in any state; every reference is cleared first (section and item image fields, sponsor logos, event posters, the site logo and favicon fall back to the library icon), listed under `unlinks` | `404` |
 
 A ticket whose object never arrives expires by the bucket's lifecycle rule (tag `state=pending`, 1 day) and its row by the nightly cleanup (7.6). In use means referenced by the working set, by any retained version, by a sponsor, by a cookie type, or by the site settings draft.
 
@@ -1326,6 +1328,8 @@ type Place = { id: number; parentId: number | null; name: string; description: s
 type PlacePin = { placeId: number; name: string; path: string[]; lat: number; lng: number; people: number;
                   codes: { tag: string; placeName: string; people: number }[] };
 ```
+
+**Delete impact.** Deletes never refuse because something depends on the row; they take the dependents with them or unlink them, and every delete has a preview so the caller sees that first. `GET /admin/<resource>/{id}/impact` answers `200 DeleteImpact` (`404` when the row is gone) for `events`, `routes`, `sponsors`, `cookie-types`, `pages`, `media`, `places`, `qr-codes`, `beacons`, `api-keys`, `subscribers`, `people`, and `contact-messages`: `deletes` lists what goes with the row (an entity kind per group, its count, up to ten names), `unlinks` what stays but loses its reference to the row, and `warnings` the plain sentences the panel shows above the counts (the page holds a role, the beacon is active, a cookie tally drops while live). The preview and the delete run the same queries, so what the preview lists is what the delete does. The one refusal left: the live event and the current event cannot be deleted; their preview answers `blocked` with the sentence ("This event is live. End it first.", "This is the current event. Make another event current first.") and the delete answers `409 event_live` or `409 event_current`. Every other resource answers `blocked` null. The delete's audit row carries, in `before`, the DTO plus the `impact` it applied; the cascaded rows get no rows of their own.
 
 **Audit.** Every admin write (every `POST`, `PATCH`, `PUT`, `DELETE` under `/admin/*`, whoever the caller is) records one `audit_log` row inside its own transaction: the actor (`person:<email>` for an ID token, `key:<name>` for an API key), the action, the entity kind and id, the resource as it was before and as it is after (the same shapes the endpoints answer with; `before` is null on create, `after` is null on delete), and the request id. Lists and details of audited resources carry `audit: AuditStamp | null` (the newest row for that entity; null for a row older than the log).
 
