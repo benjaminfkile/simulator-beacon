@@ -1299,7 +1299,7 @@ Printed stickers and the places they hang in (site.md 4 for the public route, ad
 | `PATCH /admin/places/{id}` **[snapshot]** | any of `parentId` (null for the root), `name`, `description`, `opensPageId`, `forwardUrl` | `200 Place` | `404`, `400 place_cycle` (a place cannot move under itself or its descendants), `409 place_name_taken` |
 | `PUT /admin/places/{id}/location` | `{ "lat": 46.916, "lng": -114.039, "accuracyM": 140, "source": "phone" }` (`source` one of `phone`, `search`, `drag`; `accuracyM` null unless `phone`) | `200 Place` | `404`, `400 validation_failed` |
 | `DELETE /admin/places/{id}/location` | | `200 Place` (no pin; the parent's applies) | `404` |
-| `DELETE /admin/places/{id}` **[snapshot]**, admin only | | `204` | `404`, `409 place_has_children`, `409 place_has_codes` (an open attachment) |
+| `DELETE /admin/places/{id}` **[snapshot]**, admin only | | `204`: the place and everything under it; open attachments in the subtree close (their codes become unattached), every stay keeps its history row with `placeId` null | `404` |
 | `GET /admin/places/map?eventId=&from=&to=` | | `200 { "items": PlacePin[] }`: one entry per pinned place with the people count under it (the subtree's scans in the window, attributed by the scan's event when `eventId` is given), plus `unpinned` (places with scans and no resolved pin) and `unattached` (scans on codes with no attachment) counts | `400 validation_failed` |
 
 Not snapshot-affecting: the location PUT and DELETE (pins never reach the site) and everything under `/qr-codes/{tag}/scans`.
@@ -1315,7 +1315,7 @@ type QrCode = { id: number; tag: string; batchNo: number; printedAt: string; act
                 attachment: { id: number; placeId: number; placePath: string[]; since: string } | null;
                 scans: { people: number; flagged: number; lastScanAt: string | null };
                 createdBy: string; createdAt: string; updatedAt: string; audit: AuditStamp | null };
-type QrCodeDetail = QrCode & { history: { attachmentId: number; placeId: number; placePath: string[]; fromAt: string; toAt: string | null; people: number; earlyScans: number }[];
+type QrCodeDetail = QrCode & { history: { attachmentId: number; placeId: number | null; placePath: string[]; fromAt: string; toAt: string | null; people: number; earlyScans: number }[];
                                daily: { day: string; people: number }[] };
 type Place = { id: number; parentId: number | null; name: string; description: string; path: string[];
                opensPageId: number | null; forwardUrl: string | null; opens: Opens; opensSource: "place" | "ancestor" | "home";
@@ -1781,7 +1781,7 @@ create index audit_log_action on audit_log (action, id desc);
 
 create table place (
   id            bigint generated always as identity primary key,
-  parent_id     bigint references place (id) on delete restrict,
+  parent_id     bigint references place (id) on delete cascade,
   name          text not null,
   description   text not null default '',
   opens_page_id bigint references page (id) on delete set null,
@@ -1818,7 +1818,7 @@ create table qr_code (
 create table qr_attachment (
   id          bigint generated always as identity primary key,
   qr_code_id  bigint not null references qr_code (id) on delete cascade,
-  place_id    bigint not null references place (id) on delete restrict,
+  place_id    bigint references place (id) on delete set null,
   from_at     timestamptz not null default now(),
   to_at       timestamptz,
   attached_by text not null
