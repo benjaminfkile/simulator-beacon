@@ -315,12 +315,17 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     // handler owned the tick (skip the cadence-based writes below).
     if (row.seekTo == null) return false;
     const seekTo = row.seekTo;
-    if (row.status === "loading" || row.status === "failed") {
+    if (row.status === "loading") {
+      // The flight is still loading: the request waits on the row and the
+      // first running tick applies it (a drag right after Start).
+      return false;
+    }
+    if (row.status === "failed") {
       // No emit and no index write: the request is dropped.
       try {
         await opts.db.dropSeek(seekTo);
       } catch (err) {
-        logError(err, "dropSeek(loading/failed)", { seekTo });
+        logError(err, "dropSeek(failed)", { seekTo });
       }
       return true;
     }
@@ -449,7 +454,8 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       }
       // A seek queued on the row (simulator-beacon.md 4): running re-arms the
       // scheduler; stopped emits one point through onEmit and stays stopped so
-      // Start (B9) resumes from there; loading/failed drop the request.
+      // Start (B9) resumes from there; loading keeps it for the first running
+      // tick; failed drops it.
       if (row.seekTo != null) {
         await handleSeek(row);
       }

@@ -781,6 +781,41 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
     await worker.stop();
   });
 
+  it("seek while loading is kept on the row and applied on the first running tick", async () => {
+    const points = makePoints(10);
+    const db = makeDb({
+      status: "loading",
+      year: 2025,
+      speed: 20,
+      loop: true,
+      cycles: 0,
+      index: 0,
+      seekTo: 6,
+      seekAt: new Date().toISOString(),
+    });
+    const cache = makeCache(points);
+    const stub = makeSyncScheduler();
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: () => undefined,
+      onStop: () => undefined,
+      tickMs: 60_000,
+      startScheduler: stub.runningFactory,
+    });
+    // The loading tick starts the run and leaves the seek standing.
+    await worker.tick();
+    expect(db.row.status).toBe("running");
+    expect(db.row.seekTo).toBe(6);
+    // The next tick applies it: the scheduler re-arms at 6 and seek_to clears.
+    await worker.tick();
+    expect(db.row.seekTo).toBeNull();
+    expect(db.row.index).toBe(6);
+    expect(worker.currentIndex()).toBe(6);
+    await worker.stop();
+  });
+
   it("the tickMs defaults to 250 ms so a control change lands within a quarter second", async () => {
     // Fake timers verify the recurring cadence: each 250 ms elapses one tick.
     vi.useFakeTimers();
