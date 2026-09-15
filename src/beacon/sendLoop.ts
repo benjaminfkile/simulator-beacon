@@ -162,7 +162,9 @@ export function startSendLoop(opts: SendLoopOptions): SendLoop {
       }
     }
     opts.onFailed?.(viaHub, reason);
-    if (viaHub && state.socketState === "connected") {
+    // Contracts 9.2: rejections count toward a re-join only while the heartbeat
+    // names a live event; without one every hub send is rejected by design.
+    if (viaHub && state.socketState === "connected" && hasLiveEvent) {
       consecutiveHubRejections += 1;
       if (consecutiveHubRejections >= HUB_REJECTION_REJOIN_THRESHOLD) {
         consecutiveHubRejections = 0;

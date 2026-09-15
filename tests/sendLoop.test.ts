@@ -288,6 +288,35 @@ describe("send loop behaviour", () => {
     loop.stop();
   });
 
+  it("hub rejections without a live event never trigger onHubRejectionThreshold", async () => {
+    const s = createBeaconState();
+    s.socketState = "connected";
+    s.lastHeartbeat = { receivedAt: "", liveEventId: null, isActive: true };
+    const rest = createFakeRest();
+    const hub = new FakeHubClient();
+    let thresholdCount = 0;
+    const loop = startSendLoop({
+      state: s,
+      rest,
+      getHub: () => hub,
+      ingestChannel: "x:ingest",
+      intervalMs: 60_000,
+      onHubRejectionThreshold: () => {
+        thresholdCount += 1;
+      },
+    });
+    for (let i = 0; i < 6; i++) {
+      setLatestFix(s, { ...FIX });
+      const p = loop.tick();
+      await Promise.resolve();
+      await Promise.resolve();
+      hub.lastInvoke()!.reject(new Error("no_live_event"));
+      await p;
+    }
+    expect(thresholdCount).toBe(0);
+    loop.stop();
+  });
+
   it("three consecutive hub rejections trigger one onHubRejectionThreshold; a delivered send resets the counter", async () => {
     const s = createBeaconState();
     s.socketState = "connected";
