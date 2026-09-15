@@ -1,8 +1,18 @@
-// The leader-only worker loop (simulator-beacon.md 2 and 4). Reads sim_run
-// every second, acts on `status` changes, feeds the scheduler's fixes into
-// the beacon core, and persists progress: `index` every ten fixes, and
-// `leader_state` and `leader_at` every second. When the flights API refuses a
-// load the row goes to `failed` with `lastError`.
+// The leader-only worker loop (simulator-beacon.md 2 and 4). Reads sim_run on
+// its tick, acts on `status` changes, feeds the scheduler's fixes into the
+// beacon core, and persists progress: `index` every ten fixes (the resume
+// point), `leader_state` and `leader_at` about once a second.
+//
+// The tick is 250 ms (simulator-beacon.md 2), so a control change lands within
+// a quarter second; leader_state is written on every fourth tick (about once a
+// second) and immediately after a status change the worker made. The row read
+// is a single indexed select per tick.
+//
+// Every scheduler callback is wrapped so an exception is logged and never
+// escapes — a Stop pressed while the last point goes out that races with the
+// end-of-run write once nulled `active` mid-await, and the resulting
+// unhandledRejection killed the process. Handlers capture the active run at
+// the top and return when it has changed after any await.
 //
 // The worker is deliberately independent of the HTTP server: the control API
 // writes the row; the worker sees the change on its next tick. A node that
@@ -27,6 +37,10 @@ export interface WorkerEmit {
   recordedAtNow: string;
 }
 
+export interface WorkerLogger {
+  error: (obj: Record<string, unknown>, msg: string) => void;
+}
+
 export interface WorkerOptions {
   db: Db;
   cache: FlightsCache;
@@ -34,9 +48,11 @@ export interface WorkerOptions {
   onEmit: (fix: WorkerEmit) => void;
   onStop: () => void;
   tickMs?: number;
+  persistLeaderStateEveryTicks?: number;
   now?: () => number;
   isoNow?: () => string;
   startScheduler?: typeof startScheduler;
+  log?: WorkerLogger;
 }
 
 export interface WorkerHandle {
@@ -45,6 +61,8 @@ export interface WorkerHandle {
   runningStatus(): SimRunStatus | null;
   currentIndex(): number;
   currentTotal(): number;
+  currentCycles(): number;
+  currentSpeed(): number;
   nextFixInMs(): number | null;
 }
 
@@ -60,27 +78,63 @@ interface ActiveRun {
 }
 
 export function startWorker(opts: WorkerOptions): WorkerHandle {
-  const tickMs = opts.tickMs ?? 1000;
+  const tickMs = opts.tickMs ?? 250;
+  const persistEvery = Math.max(1, opts.persistLeaderStateEveryTicks ?? 4);
   const isoNow = opts.isoNow ?? (() => new Date().toISOString());
   const startSched = opts.startScheduler ?? startScheduler;
+  const log = opts.log;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let tickInFlight: Promise<void> | null = null;
   let active: ActiveRun | null = null;
   let lastRunStatus: SimRunStatus | null = null;
   let lastPersistedIndex = 0;
+  let ticksSinceLeaderStateWrite = 0;
 
-  function persistLeaderState(): Promise<void> {
-    const state = opts.buildLeaderState();
-    return opts.db.writeLeaderState(state).catch(() => undefined);
+  function logError(err: unknown, where: string, extra: Record<string, unknown> = {}): void {
+    if (!log) return;
+    try {
+      log.error(
+        {
+          ...extra,
+          err: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        },
+        `worker: ${where} threw`,
+      );
+    } catch {
+      // A logger throw must not escape into the loop.
+    }
+  }
+
+  function buildLeaderPayload(): Record<string, unknown> {
+    const base = opts.buildLeaderState();
+    const run = {
+      status: lastRunStatus,
+      index: active?.scheduler.currentIndex() ?? lastPersistedIndex,
+      cycles: active?.cycles ?? 0,
+      speed: active?.speed ?? 0,
+      nextFixInMs: active?.nextFixInMs ?? null,
+    };
+    return { ...base, run };
+  }
+
+  async function persistLeaderState(): Promise<void> {
+    try {
+      await opts.db.writeLeaderState(buildLeaderPayload());
+      ticksSinceLeaderStateWrite = 0;
+    } catch (err) {
+      logError(err, "writeLeaderState");
+    }
   }
 
   async function persistIndex(index: number): Promise<void> {
     try {
       await opts.db.update({ index });
       lastPersistedIndex = index;
-    } catch {
-      // Persistence failures are logged upstream; the next tick will retry.
+    } catch (err) {
+      // Persistence failures are logged; the next tick will retry.
+      logError(err, "persistIndex", { index });
     }
   }
 
@@ -88,43 +142,59 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     if (!active) return;
     active.scheduler.stop();
     active = null;
-    opts.onStop();
+    try {
+      opts.onStop();
+    } catch (err) {
+      logError(err, "onStop");
+    }
   }
 
   async function handleEmit(e: SchedulerEmit): Promise<void> {
-    if (!active) return;
-    active.nextFixInMs = e.nextFixInMs;
-    opts.onEmit({ point: e.point, recordedAtNow: e.recordedAtNow });
-    active.emittedSinceLastPersist += 1;
+    const run = active;
+    if (!run) return;
+    run.nextFixInMs = e.nextFixInMs;
+    try {
+      opts.onEmit({ point: e.point, recordedAtNow: e.recordedAtNow });
+    } catch (err) {
+      logError(err, "onEmit", { year: run.year, index: e.index });
+    }
+    run.emittedSinceLastPersist += 1;
     // Persist index every ten fixes: `e.index` is the emitted fix, so the
     // resume point after this one is `e.index + 1`. A hand-off during the
     // window between persists skips at most a few points.
-    if (active.emittedSinceLastPersist >= 10) {
-      active.emittedSinceLastPersist = 0;
+    if (run.emittedSinceLastPersist >= 10) {
+      run.emittedSinceLastPersist = 0;
       const nextIndex = e.index + 1;
       await persistIndex(nextIndex);
-      await opts.db.update({ lastFixAt: e.recordedAtNow }).catch(() => undefined);
+      if (active !== run) return;
+      try {
+        await opts.db.update({ lastFixAt: e.recordedAtNow });
+      } catch (err) {
+        logError(err, "update lastFixAt");
+      }
     }
   }
 
   async function handleEnd(): Promise<void> {
-    if (!active) return;
-    const total = active.points.length;
+    const run = active;
+    if (!run) return;
+    const total = run.points.length;
     // Loop at the end (simulator-beacon.md 4): when `loop` is true (the row's
     // current value), start again from the first point at once with the same
     // year and speed, and bump `cycles` — persisted on the row. When it is
     // false the run stops with the index at the last point.
-    if (active.loop) {
-      const nextCycles = active.cycles + 1;
-      active.cycles = nextCycles;
-      active.emittedSinceLastPersist = 0;
+    if (run.loop) {
+      const nextCycles = run.cycles + 1;
+      run.cycles = nextCycles;
+      run.emittedSinceLastPersist = 0;
       lastPersistedIndex = 0;
       try {
         await opts.db.update({ index: 0, cycles: nextCycles });
-      } catch {
-        // The next tick will re-read; a failure here does not stop the loop.
+      } catch (err) {
+        logError(err, "update loop restart");
       }
-      active.scheduler.start(0);
+      if (active !== run) return;
+      run.scheduler.start(0);
       return;
     }
     active = null;
@@ -132,25 +202,37 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       await opts.db.update({ status: "stopped", index: total });
       lastPersistedIndex = total;
       lastRunStatus = "stopped";
-    } catch {
-      // Ignore; the next tick will re-read.
+    } catch (err) {
+      logError(err, "update end-of-run");
     }
-    opts.onStop();
+    try {
+      opts.onStop();
+    } catch (err) {
+      logError(err, "onStop");
+    }
+    // A status change the worker made: persist leader_state immediately.
+    await persistLeaderState();
   }
 
   async function loadAndStart(row: SimRun): Promise<void> {
     if (row.year == null) {
-      await opts.db
-        .update({ status: "failed", lastError: "no year" })
-        .catch(() => undefined);
+      try {
+        await opts.db.update({ status: "failed", lastError: "no year" });
+      } catch (err) {
+        logError(err, "update failed(no year)");
+      }
       lastRunStatus = "failed";
+      await persistLeaderState();
       return;
     }
     if (!isSpeed(row.speed)) {
-      await opts.db
-        .update({ status: "failed", lastError: `invalid speed ${row.speed}` })
-        .catch(() => undefined);
+      try {
+        await opts.db.update({ status: "failed", lastError: `invalid speed ${row.speed}` });
+      } catch (err) {
+        logError(err, "update failed(bad speed)");
+      }
       lastRunStatus = "failed";
+      await persistLeaderState();
       return;
     }
     let flight;
@@ -163,25 +245,39 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
           : err instanceof Error
             ? err.message
             : String(err);
-      await opts.db
-        .update({ status: "failed", lastError: message })
-        .catch(() => undefined);
+      try {
+        await opts.db.update({ status: "failed", lastError: message });
+      } catch (dbErr) {
+        logError(dbErr, "update failed(load)");
+      }
       lastRunStatus = "failed";
+      await persistLeaderState();
       return;
     }
     if (flight.points.length === 0) {
-      await opts.db
-        .update({ status: "failed", lastError: "no published points" })
-        .catch(() => undefined);
+      try {
+        await opts.db.update({ status: "failed", lastError: "no published points" });
+      } catch (err) {
+        logError(err, "update failed(no points)");
+      }
       lastRunStatus = "failed";
+      await persistLeaderState();
       return;
     }
     const startIndex = Math.max(0, Math.min(row.index, flight.points.length - 1));
     const scheduler = startSched({
       points: flight.points,
       speed: row.speed as Speed,
-      onEmit: (e) => void handleEmit(e),
-      onEnd: () => void handleEnd(),
+      onEmit: (e) => {
+        handleEmit(e).catch((err) =>
+          logError(err, "handleEmit", { year: row.year, index: e.index }),
+        );
+      },
+      onEnd: () => {
+        handleEnd().catch((err) =>
+          logError(err, "handleEnd", { year: row.year }),
+        );
+      },
       isoNow,
     });
     active = {
@@ -195,17 +291,21 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       nextFixInMs: null,
     };
     lastPersistedIndex = startIndex;
-    await opts.db
-      .update({
+    try {
+      await opts.db.update({
         status: "running",
         total: flight.points.length,
         index: startIndex,
         startedAt: isoNow(),
         lastError: null,
-      })
-      .catch(() => undefined);
+      });
+    } catch (err) {
+      logError(err, "update running");
+    }
     lastRunStatus = "running";
     scheduler.start(startIndex);
+    // A status change the worker made: persist leader_state immediately.
+    await persistLeaderState();
   }
 
   function tick(): Promise<void> {
@@ -215,22 +315,23 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       let row: SimRun;
       try {
         row = await opts.db.read();
-      } catch {
+      } catch (err) {
+        logError(err, "read");
         return;
       }
-      await persistLeaderState();
+      ticksSinceLeaderStateWrite += 1;
       const prev = lastRunStatus;
       lastRunStatus = row.status;
+      let workerChangedStatus = false;
       if (row.status === "stopped" || row.status === "failed") {
         if (active) await stopActive();
-        return;
-      }
-      if (row.status === "loading" && prev !== "loading") {
+      } else if (row.status === "loading" && prev !== "loading") {
         if (active) await stopActive();
         await loadAndStart(row);
+        // loadAndStart flipped the row's status (running or failed) itself
+        // and persisted leader_state; skip the cadence-based write below.
         return;
-      }
-      if (row.status === "running") {
+      } else if (row.status === "running") {
         // The API writes `loading` and the worker flips to `running`; a row
         // directly at `running` on the first tick after a leader hand-off is
         // the resume case.
@@ -247,7 +348,11 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
         if (row.year != null && row.year !== active.year) {
           await stopActive();
           const patched: SimRun = { ...row, index: 0, cycles: 0 };
-          await opts.db.update({ index: 0, cycles: 0 }).catch(() => undefined);
+          try {
+            await opts.db.update({ index: 0, cycles: 0 });
+          } catch (err) {
+            logError(err, "update year switch");
+          }
           await loadAndStart(patched);
           return;
         }
@@ -261,7 +366,19 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
         if (row.cycles !== active.cycles) {
           active.cycles = row.cycles;
         }
-        return;
+      }
+      // Cadence: write leader_state every `persistEvery` ticks (about once a
+      // second at tickMs=250), or immediately after a status change the worker
+      // made (loadAndStart and handleEnd persist inline; the fall-through case
+      // here is stopActive on a row-driven stop, which also counts).
+      if (
+        (prev === "running" || prev === "loading") &&
+        (row.status === "stopped" || row.status === "failed")
+      ) {
+        workerChangedStatus = true;
+      }
+      if (workerChangedStatus || ticksSinceLeaderStateWrite >= persistEvery) {
+        await persistLeaderState();
       }
     })().finally(() => {
       tickInFlight = null;
@@ -273,15 +390,19 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     if (stopped) return;
     timer = setTimeout(() => {
       void (async () => {
-        await tick();
+        try {
+          await tick();
+        } catch (err) {
+          logError(err, "tick");
+        }
         schedule();
       })();
     }, tickMs);
   }
 
   // The first tick fires after `tickMs`, matching the recurring cadence. A
-  // hand-off gains at most a second; the resume path (running row without an
-  // active scheduler) will load the flight on the first tick.
+  // hand-off gains at most a quarter second; the resume path (running row
+  // without an active scheduler) will load the flight on the first tick.
   schedule();
 
   return {
@@ -298,6 +419,8 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     runningStatus: () => lastRunStatus,
     currentIndex: () => active?.scheduler.currentIndex() ?? lastPersistedIndex,
     currentTotal: () => active?.points.length ?? 0,
+    currentCycles: () => active?.cycles ?? 0,
+    currentSpeed: () => active?.speed ?? 0,
     nextFixInMs: () => active?.nextFixInMs ?? null,
   };
 }

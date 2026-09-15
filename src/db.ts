@@ -38,6 +38,7 @@ export interface SimRun {
   cycles: number;
   index: number;
   total: number;
+  nextFixInMs: number | null;
   startedAt: string | null;
   lastFixAt: string | null;
   lastError: string | null;
@@ -133,6 +134,7 @@ function rowToSimRun(row: Record<string, unknown>): SimRun {
     cycles: Number(row.cycles ?? 0),
     index: Number(row.index ?? 0),
     total: Number(row.total ?? 0),
+    nextFixInMs: null,
     startedAt: isoOrNull(row.started_at),
     lastFixAt: isoOrNull(row.last_fix_at),
     lastError: (row.last_error as string | null) ?? null,

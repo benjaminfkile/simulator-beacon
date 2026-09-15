@@ -9,10 +9,21 @@
 // `ChannelEvent` (contracts 2.3 step 1). The envelope is routed on
 // `envelope.channel` and `envelope.event`; envelopes for channels this beacon
 // did not join are ignored.
+//
+// `rejoin()` is the same path as `channelEvicted auth_expired`, exposed for the
+// send loop's three-consecutive-hub-rejections trigger (contracts 9.2). Each
+// call increments `state.rejoinCount` (the transport telemetry counter), logs
+// its outcome, and on failure takes the normal reconnect branch so the send
+// loop falls back to HTTP until the socket is connected again.
 
 import { backoffMs, JOIN_DENIED_FIRST_WAIT_MS } from "./backoff.js";
 import type { HubClient } from "./hub.js";
 import type { BeaconState } from "./state.js";
+
+export interface SocketLogger {
+  info: (msg: string) => void;
+  warn: (msg: string) => void;
+}
 
 export interface SocketLoopOptions {
   build: () => HubClient;
@@ -23,11 +34,13 @@ export interface SocketLoopOptions {
   onDisconnected?: () => void;
   onBuildError?: (err: unknown) => void;
   sleep?: (ms: number) => Promise<void>;
+  log?: SocketLogger;
 }
 
 export interface SocketLoop {
   stop(): Promise<void>;
   wake(): void;
+  rejoin(): Promise<void>;
 }
 
 const CHANNEL_EVENT = "ChannelEvent";
@@ -63,6 +76,28 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
     opts.onConnected?.();
   }
 
+  async function tryRejoinOn(client: HubClient): Promise<void> {
+    // Same path as `channelEvicted auth_expired`. Counts every re-invocation
+    // whether or not it resolved (contracts 9.2 "rejoinCount ... on a still-open
+    // connection"). On success the send loop wakes; on failure the socket
+    // takes its close-or-failure branch so the send loop falls back to HTTP.
+    state.rejoinCount += 1;
+    try {
+      await client.invoke("JoinPrivateChannel", opts.ingestChannel, opts.key);
+      if (current === client) opts.onConnected?.();
+      opts.log?.info("socket: rejoined");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      opts.log?.warn(`socket: rejoin failed ${msg}`);
+      if (current === client) {
+        attempt = 0;
+        state.socketState = "reconnecting";
+        opts.onDisconnected?.();
+        await stopCurrent();
+      }
+    }
+  }
+
   async function loop(): Promise<void> {
     while (!stopped) {
       state.socketState = "connecting";
@@ -70,9 +105,6 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
       try {
         client = opts.build();
       } catch (err) {
-        // A build() throw (bad URL, misconfigured transport, …) is treated the
-        // same as a failed start: report, backoff, retry. Letting it escape
-        // would kill the loop and strand the beacon.
         opts.onBuildError?.(err);
         state.socketState = "reconnecting";
         opts.onDisconnected?.();
@@ -94,9 +126,6 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
           event?: unknown;
           data?: unknown;
         };
-        // Ignore envelopes for channels this beacon did not join. The site's
-        // channels ride the same connection when a fleet ever grows to share
-        // one; the beacon only cares about its ingest topic.
         if (env.channel !== opts.ingestChannel) return;
         if (env.event === "joined") {
           markConnected();
@@ -107,29 +136,11 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
             env.data && typeof env.data === "object" && "reason" in (env.data as object)
               ? (env.data as { reason?: string }).reason
               : undefined;
+          opts.log?.info(`socket: evicted ${reason ?? "unknown"}`);
           if (reason === "auth_expired") {
-            // Re-invoke JoinPrivateChannel on the same connection and kick the
-            // send loop. A failed re-join drops the connection and falls back
-            // to the normal reconnect path with attempt = 0 so it retries
-            // immediately, per contracts 9.2.
-            void (async () => {
-              try {
-                await client.invoke(
-                  "JoinPrivateChannel",
-                  opts.ingestChannel,
-                  opts.key,
-                );
-                if (current === client) opts.onConnected?.();
-              } catch {
-                if (current === client) {
-                  attempt = 0;
-                  await stopCurrent();
-                }
-              }
-            })();
+            void tryRejoinOn(client);
             return;
           }
-          // Any other eviction reason: the normal reconnect path.
           void stopCurrent();
           return;
         }
@@ -139,7 +150,6 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
         await client.invoke("JoinPrivateChannel", opts.ingestChannel, opts.key);
         attempt = 0;
         markConnected();
-        // Sit here until stopCurrent() is called (by stop, close, or eviction).
         while (!stopped && current === client) {
           await sleep(1000);
         }
@@ -165,10 +175,6 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
     }
   }
 
-  // The loop never throws out: build() throws are caught and treated like a
-  // failed start (log, backoff, retry). Kick it off in the microtask queue so
-  // the caller returns a handle before the first `state.socketState =
-  // "connecting"`.
   void Promise.resolve().then(loop);
 
   return {
@@ -181,6 +187,11 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
       // No wake-up channel: sleep-based delays run to completion; the loop
       // reads `stopped` on every cycle. A caller who needs to break the sleep
       // early passes their own sleep() and drives it themselves.
+    },
+    async rejoin() {
+      const c = current;
+      if (!c) return;
+      await tryRejoinOn(c);
     },
   };
 }
