@@ -5,7 +5,7 @@
 
 export interface LeaderOptions {
   gatewayInternalUrl: string;
-  // Null only when forceLeader is true — the forced path never polls
+  // Null only when forceLeader is true, the forced path never polls
   // /internal/leader and does not need the token.
   realtimeToken: string | null;
   forceLeader?: boolean;

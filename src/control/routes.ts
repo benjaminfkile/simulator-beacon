@@ -206,7 +206,7 @@ export async function buildControlServer(
     }
     // Guard the year against the current API answer so the caller gets 400
     // rather than a delayed `failed` for an unknown year. If the API is down
-    // we let the row go to `loading` anyway — the worker will surface the
+    // we let the row go to `loading` anyway, the worker will surface the
     // failure through the row and the panel.
     let known = true;
     try {

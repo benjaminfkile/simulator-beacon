@@ -16,7 +16,7 @@ export interface Config {
   corsOrigins: string[];
   logLevel: string;
   forceLeader: boolean;
-  // Required only when forceLeader is false — a forced leader never polls
+  // Required only when forceLeader is false, a forced leader never polls
   // /internal/leader, and the local recipe runs without a gateway.
   gatewayRealtimeToken: string | null;
 }

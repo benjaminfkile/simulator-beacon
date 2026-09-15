@@ -9,7 +9,7 @@
 // is a single indexed select per tick.
 //
 // Every scheduler callback is wrapped so an exception is logged and never
-// escapes — a Stop pressed while the last point goes out that races with the
+// escapes, a Stop pressed while the last point goes out that races with the
 // end-of-run write once nulled `active` mid-await, and the resulting
 // unhandledRejection killed the process. Handlers capture the active run at
 // the top and return when it has changed after any await.
@@ -181,7 +181,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     const total = run.points.length;
     // Loop at the end (simulator-beacon.md 4): when `loop` is true (the row's
     // current value), start again from the first point at once with the same
-    // year and speed, and bump `cycles` — persisted on the row. When it is
+    // year and speed, and bump `cycles`, persisted on the row. When it is
     // false the run stops with the index at the last point.
     if (run.loop) {
       const nextCycles = run.cycles + 1;

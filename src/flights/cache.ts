@@ -42,7 +42,7 @@ function primaryEvents(events: EventItem[]): Array<{ year: number; event: EventI
   }
   const out: Array<{ year: number; event: EventItem }> = [];
   for (const [year, list] of grouped) {
-    // The primary event for a year is the highest id — the latest creation,
+    // The primary event for a year is the highest id, the latest creation,
     // with any migration re-run overriding an earlier import.
     const primary = list.slice().sort((a, b) => b.id - a.id)[0]!;
     out.push({ year, event: primary });
