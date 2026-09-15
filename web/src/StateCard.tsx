@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import styles from "./App.module.css";
-import type { ControlState, Speed, YearItem } from "./types.js";
+import { Timeline } from "./Timeline.js";
+import type { ControlState, FlightSeries, Speed, YearItem } from "./types.js";
 
 export interface StateCardProps {
   state: ControlState | null;
@@ -14,9 +15,12 @@ export interface StateCardProps {
   onStart: () => void;
   onStop: () => void;
   onRestart: () => void;
+  onSeek: (index: number) => void;
   errorLine: string | null;
   busy: "" | "start" | "stop" | "restart";
   speedOptions: readonly Speed[];
+  flight: FlightSeries | null;
+  flightError: string | null;
 }
 
 function formatDuration(ms: number): string {
@@ -69,9 +73,12 @@ export function StateCard(props: StateCardProps) {
     onStart,
     onStop,
     onRestart,
+    onSeek,
     errorLine,
     busy,
     speedOptions,
+    flight,
+    flightError,
   } = props;
 
   // Elapsed ticks locally to update the counter without waiting for the next
@@ -86,9 +93,32 @@ export function StateCard(props: StateCardProps) {
   const run = state?.run ?? null;
   const total = run?.total ?? 0;
   const index = run?.index ?? 0;
-  const progressPct = total > 0 ? Math.min(100, Math.round((index / total) * 100)) : 0;
   const startedMs = run?.startedAt ? Date.parse(run.startedAt) : NaN;
   const elapsedMs = Number.isFinite(startedMs) ? now - startedMs : NaN;
+
+  // Start reads "Resume" when the run is stopped mid-recording for the year
+  // the operator has selected (the row's index is inside the recording but
+  // not yet the last point). Otherwise it reads "Start" (simulator-beacon.md
+  // 5). Restart is unchanged; Stop always reads "Pause".
+  const startResumes =
+    run != null &&
+    run.status === "stopped" &&
+    typeof selectedYear === "number" &&
+    run.year === selectedYear &&
+    run.index > 0 &&
+    run.total > 0 &&
+    run.index < run.total;
+  const startLabel = startResumes ? "Resume" : "Start";
+  const startBusyLabel = startResumes ? "Resuming…" : "Starting…";
+
+  // The chart's playhead only makes sense when the run's year matches the
+  // selection and the run has a total: elsewhere the year on the row and the
+  // year in the chart do not line up.
+  const showPlayhead =
+    run != null &&
+    typeof selectedYear === "number" &&
+    run.year === selectedYear &&
+    run.total > 0;
 
   return (
     <section
@@ -183,26 +213,29 @@ export function StateCard(props: StateCardProps) {
           <dd className={styles.value} data-testid="run-elapsed">
             {Number.isFinite(elapsedMs) ? formatDuration(elapsedMs) : "none"}
           </dd>
+          {run != null && run.nextFixInMs != null ? (
+            <>
+              <dt className={styles.label}>Next fix in</dt>
+              <dd className={styles.value} data-testid="run-next-fix">
+                {`${run.nextFixInMs} ms`}
+              </dd>
+            </>
+          ) : null}
           <dt className={styles.label}>Last error</dt>
           <dd className={styles.value} data-testid="run-error">
             {run?.lastError ?? "none"}
           </dd>
         </dl>
-        <div className={styles.progressWrap}>
-          <div className={styles.progressBar} aria-hidden="true">
-            <div
-              className={styles.progressFill}
-              style={{ width: `${progressPct}%` }}
-              data-testid="progress-fill"
-            />
-          </div>
-          <div className={styles.progressMeta}>
-            <span>{progressPct}%</span>
-            <span>
-              {run?.startedAt ? `started ${run.startedAt}` : "not started"}
-            </span>
-          </div>
-        </div>
+      </div>
+
+      <div className={styles.section}>
+        <h2 className={styles.sectionTitle}>Timeline</h2>
+        <Timeline
+          flight={flight}
+          loadingError={flightError}
+          playheadIndex={showPlayhead ? index : null}
+          onSeek={onSeek}
+        />
       </div>
 
       <div className={styles.section}>
@@ -265,7 +298,7 @@ export function StateCard(props: StateCardProps) {
             onClick={onStart}
             disabled={busy !== "" || selectedYear === ""}
           >
-            {busy === "start" ? "Starting…" : "Start"}
+            {busy === "start" ? startBusyLabel : startLabel}
           </button>
           <button
             className={styles.button}
@@ -273,7 +306,7 @@ export function StateCard(props: StateCardProps) {
             onClick={onStop}
             disabled={busy !== ""}
           >
-            {busy === "stop" ? "Stopping…" : "Stop"}
+            {busy === "stop" ? "Pausing…" : "Pause"}
           </button>
           <button
             className={styles.button}

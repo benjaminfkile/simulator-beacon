@@ -12,6 +12,7 @@ export const STATE_FIXTURE: ControlState = {
     cycles: 0,
     index: 412,
     total: 1065,
+    nextFixInMs: 340,
     startedAt: "2025-12-22T01:00:00.000Z",
     lastFixAt: "2025-12-22T01:20:34.000Z",
     lastError: null,

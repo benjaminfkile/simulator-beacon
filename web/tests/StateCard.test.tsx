@@ -26,9 +26,12 @@ function renderCard(overrides: Partial<Parameters<typeof StateCard>[0]> = {}) {
       onStart={noop}
       onStop={noop}
       onRestart={noop}
+      onSeek={noop}
       errorLine={null}
       busy=""
       speedOptions={SPEED_OPTIONS}
+      flight={null}
+      flightError={null}
       {...overrides}
     />,
   );
@@ -77,13 +80,13 @@ describe("StateCard", () => {
     expect(screen.getByTestId("run-elapsed").textContent).not.toBe("none");
     // lastError = null in the fixture, so the field renders the placeholder.
     expect(screen.getByTestId("run-error")).toHaveTextContent("none");
-    // startedAt lands on the progress meta.
-    expect(container.textContent ?? "").toContain(
-      `started ${STATE_FIXTURE.run.startedAt}`,
+    // The progress bar was removed with B11; the chart is the progress now
+    // and the container carries no `progress-fill` mark.
+    expect(container.querySelector('[data-testid="progress-fill"]')).toBeNull();
+    // Next fix in ms is present when the fixture carries it.
+    expect(screen.getByTestId("run-next-fix")).toHaveTextContent(
+      `${STATE_FIXTURE.run.nextFixInMs} ms`,
     );
-    // Progress bar: 412 / 1065 rounds to 39%.
-    const fill = screen.getByTestId("progress-fill");
-    expect(fill.getAttribute("style") ?? "").toContain("width: 39%");
   });
 
   it("shows the revoked banner when the beacon key is revoked", () => {
@@ -144,11 +147,72 @@ describe("StateCard", () => {
         onStart={() => {}}
         onStop={() => {}}
         onRestart={() => {}}
+        onSeek={() => {}}
         errorLine={null}
         busy=""
         speedOptions={SPEED_OPTIONS}
+        flight={null}
+        flightError={null}
       />,
     );
     expect(queryByTestId("run-cycle")).toHaveTextContent("cycle 2");
+  });
+
+  it("Start reads Resume when the run is stopped mid-recording for the selected year", () => {
+    // Stopped, index in range, year matches → Resume; Stop reads Pause.
+    renderCard({
+      state: {
+        ...STATE_FIXTURE,
+        run: {
+          ...STATE_FIXTURE.run,
+          status: "stopped",
+          year: 2025,
+          index: 200,
+          total: 1065,
+        },
+      },
+      selectedYear: 2025,
+    });
+    expect(screen.getByTestId("btn-start")).toHaveTextContent("Resume");
+    expect(screen.getByTestId("btn-stop")).toHaveTextContent("Pause");
+  });
+
+  it("Start reads Start when the run is running (not stopped)", () => {
+    renderCard();
+    expect(screen.getByTestId("btn-start")).toHaveTextContent("Start");
+  });
+
+  it("Start reads Start when index == total (a run that ended without loop)", () => {
+    renderCard({
+      state: {
+        ...STATE_FIXTURE,
+        run: {
+          ...STATE_FIXTURE.run,
+          status: "stopped",
+          year: 2025,
+          index: 1065,
+          total: 1065,
+        },
+      },
+      selectedYear: 2025,
+    });
+    expect(screen.getByTestId("btn-start")).toHaveTextContent("Start");
+  });
+
+  it("Start reads Start when the selected year differs from the row's year", () => {
+    renderCard({
+      state: {
+        ...STATE_FIXTURE,
+        run: {
+          ...STATE_FIXTURE.run,
+          status: "stopped",
+          year: 2024,
+          index: 200,
+          total: 1065,
+        },
+      },
+      selectedYear: 2025,
+    });
+    expect(screen.getByTestId("btn-start")).toHaveTextContent("Start");
   });
 });

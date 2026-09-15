@@ -100,3 +100,69 @@ test("sign in, start 2025 at 60x, loop past the end, mid-run speed change, stop"
     timeout: 20_000,
   });
 });
+
+test("drag the playhead to the middle at 60x, then Pause keeps the index (simulator-beacon.md 5)", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await page.locator('input[name="username"]').fill(
+    process.env.E2E_ADMIN_USERNAME!,
+  );
+  await page.locator('input[name="password"]').fill(
+    process.env.E2E_ADMIN_PASSWORD!,
+  );
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await page.getByRole("textbox", { name: /code/i }).fill(await freshTotpCode(process.env.E2E_ADMIN_TOTP_SECRET!));
+  await page.getByRole("button", { name: /sign in/i }).click();
+
+  await expect(page.getByTestId("year-select")).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId("year-select").selectOption(YEAR);
+  await page.getByTestId("speed-select").selectOption("60");
+  await page.getByTestId("btn-start").click();
+  await expect(page.getByTestId("run-status")).toHaveText(/running|loading/, {
+    timeout: 20_000,
+  });
+  // Wait for the timeline SVG to appear (the flight has to have loaded).
+  const svg = page.getByTestId("timeline-svg");
+  await expect(svg).toBeVisible({ timeout: 20_000 });
+
+  const box = await svg.boundingBox();
+  if (!box) throw new Error("timeline-svg has no bounding box");
+  const midX = box.x + box.width / 2;
+  const midY = box.y + box.height / 2;
+  // Simulate a drag: down at 20%, three moves toward the middle, release.
+  await page.mouse.move(box.x + box.width * 0.2, midY);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.3, midY);
+  await page.mouse.move(box.x + box.width * 0.4, midY);
+  await page.mouse.move(midX, midY);
+  await page.mouse.up();
+
+  // The run's index should be within 5% of half the total within 2 s.
+  await expect
+    .poll(
+      async () => {
+        const txt = await page.getByTestId("run-progress").innerText();
+        const [idxStr, totalStr] = txt.split("/").map((s) => s.trim());
+        const idx = Number(idxStr);
+        const total = Number(totalStr);
+        if (!Number.isFinite(idx) || !Number.isFinite(total) || total <= 0) return -1;
+        return Math.abs(idx / total - 0.5);
+      },
+      { timeout: 2_000, message: "run.index did not settle near total/2 after the drag" },
+    )
+    .toBeLessThanOrEqual(0.05);
+
+  // Pause and expect the status stopped with the index kept.
+  const before = await page.getByTestId("run-progress").innerText();
+  await page.getByTestId("btn-stop").click();
+  await expect(page.getByTestId("run-status")).toHaveText(/stopped/, {
+    timeout: 10_000,
+  });
+  const after = await page.getByTestId("run-progress").innerText();
+  // The row's index is kept (Pause is Stop; simulator-beacon.md 4).
+  const beforeIdx = Number(before.split("/")[0]!.trim());
+  const afterIdx = Number(after.split("/")[0]!.trim());
+  // The index may still tick a bit before the Pause lands; accept within a
+  // small margin.
+  expect(Math.abs(afterIdx - beforeIdx)).toBeLessThan(50);
+});
