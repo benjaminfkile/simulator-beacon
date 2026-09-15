@@ -3565,6 +3565,9 @@
             ],
             "format": "int32"
           },
+          "hubAllowed": {
+            "type": "boolean"
+          },
           "fixesStored": {
             "pattern": "^-?(?:0|[1-9]\\d*)$",
             "type": [
@@ -5241,6 +5244,9 @@
             ],
             "format": "int32"
           },
+          "hubEnabled": {
+            "type": "boolean"
+          },
           "snapshotUrl": {
             "type": "string"
           },
@@ -6382,6 +6388,12 @@
           },
           "minIntervalMs": {
             "$ref": "#/components/schemas/JsonElement"
+          },
+          "hubAllowed": {
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         }
       },

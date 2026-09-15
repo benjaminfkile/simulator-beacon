@@ -20,6 +20,9 @@
     "pollIntervalMs": {
       "type": "integer"
     },
+    "hubEnabled": {
+      "type": "boolean"
+    },
     "snapshotUrl": {
       "type": "string"
     },

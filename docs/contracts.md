@@ -140,6 +140,7 @@ The API hands the same bytes to the CDN PUT and to the hub publish (section 2.6)
   "eventId": 7,
   "eventStatusId": 3,
   "pollIntervalMs": 5000,
+  "hubEnabled": true,
   "snapshotUrl": "https://<cdn-domain>/snapshots/3f9a1c...b2e1.json",
   "cookieTally": { "1": 412, "3": 90 },
   "seq": 1832,
@@ -163,6 +164,7 @@ Keys appear in this order.
 | `eventId` | `int64 \| null` | no event is current | The current event (1.3 defines "current"). |
 | `eventStatusId` | `int \| null` | `eventId` is null | Status of the current event. The site's page switch. |
 | `pollIntervalMs` | `int` | never | CDN poll cadence floor. From setting `poll_interval_ms`. |
+| `hubEnabled` | `bool` | never | Whether the site may use the hub. From setting `hub_enabled`. While false the site does not connect (and drops a connection it holds) and runs on the poll alone; the operator's switch for every visitor at once (1.9). |
 | `snapshotUrl` | `string` | never (a snapshot always exists after first boot) | Absolute CDN URL of the current snapshot. Changes only when the snapshot is rebuilt with different content. |
 | `cookieTally` | `object` | never (`{}` when no cookies or no event) | Keys are cookie type ids as decimal strings, emitted in ascending numeric id order; values are `int` counts of cookies on the current event. A type with zero cookies is absent; the site fills zeros from `snapshot.cookieTypes`. |
 | `seq` | `int64 \| null` | the current event has no published location | Arrival sequence of the location fields below, per event, strictly increasing. |
@@ -675,7 +677,7 @@ Rules, evaluated in this order:
 | Body malformed, or `channel` malformed | `200 { "allow": false }` |
 | Prefix is not `WMSFO_SERVICE_NAME` | `200 { "allow": false }` |
 | Topic `location`, `event`, or `cookies` | `200 { "allow": true }`; credential ignored (null or any string); `identity` omitted; zero I/O |
-| Topic `ingest` and `credential` matches the key regex (3.2) and a `beacon` row has `key_hash = sha256(credential)` with `revoked_at is null` | `200 { "allow": true, "identity": "<beaconId>:<keyVersion>" }` (`beacon.id` and `beacon.key_version`, decimal, colon-separated); stamp `beacon.last_seen_at = now()` |
+| Topic `ingest` and `credential` matches the key regex (3.2) and a `beacon` row has `key_hash = sha256(credential)` with `revoked_at is null` and `hub_allowed` true (a beacon with the hub switched off in the panel is denied and sends over HTTP, 9.2; the message path answers `403` for it as well, 2.5) | `200 { "allow": true, "identity": "<beaconId>:<keyVersion>" }` (`beacon.id` and `beacon.key_version`, decimal, colon-separated); stamp `beacon.last_seen_at = now()` |
 | Topic `ingest` otherwise | `200 { "allow": false }` |
 | Any other topic | `200 { "allow": false }` |
 
@@ -900,6 +902,7 @@ type Beacon = {
   revokedAt: string | null; lastSeenAt: string | null; lastLocationAt: string | null; lastHeartbeatAt: string | null;
   staleSince: string | null; telemetry: Heartbeat | null; hubConnected: boolean | null; healthy: boolean;
   minIntervalMs: number | null;                 // per-beacon override of location_min_interval_ms; null means the setting
+  hubAllowed: boolean;                          // false: the authorize callback denies this beacon's join and it sends over HTTP (2.4)
   fixesStored: number; fixesCarried: number; fixesRateLimited: number;
   createdBy: string; createdAt: string; updatedAt: string;
   audit: AuditStamp | null;
@@ -1126,7 +1129,7 @@ Attaching a route to an event is `PATCH /admin/events/{id}` with `routeId`.
 | `GET /admin/beacons` | | `200 { "items": Beacon[], "staleAfterS": 45 }` by name (telemetry included; `staleAfterS` is the current `beacon_stale_after_s`; `hubConnected` is true when the gateway's presence list for `<service>:ingest` (its `members[].identity`) contains `<id>:<keyVersion>` for the beacon, false when it does not, null when the presence call failed; `healthy` is `revokedAt` null and `staleSince` null and `lastSeenAt` not null) | |
 | `GET /admin/beacons/{id}` | | `200 Beacon` (`hubConnected` resolved the same way) | |
 | `POST /admin/beacons` | `{ "name": "...", "notes": "" }` (`name` 1 to 100, `notes` 0 to 2000) | `201 { "beacon": Beacon, "key": "wbk_...", "enrollment": Enrollment }` | `400` |
-| `PATCH /admin/beacons/{id}` | `name`, `notes`, `minIntervalMs` (int 0 to 60000 or null to clear the override) | `200 Beacon` | `404` |
+| `PATCH /admin/beacons/{id}` | `name`, `notes`, `minIntervalMs` (int 0 to 60000 or null to clear the override), `hubAllowed` (bool: whether the beacon may join the hub; false denies its join at the authorize callback and it sends over HTTP) | `200 Beacon` | `404` |
 | `POST /admin/beacons/{id}/activate` | none | `200 Beacon` | `409 beacon_revoked` |
 | `POST /admin/beacons/{id}/deactivate` | none | `200 Beacon` | |
 | `POST /admin/beacons/{id}/rotate` | none | `200 { "beacon": Beacon, "key": "wbk_...", "enrollment": Enrollment }` | `409 beacon_revoked` |
@@ -1872,6 +1875,7 @@ Plain `lat`/`lng` columns; no PostGIS. `seq` is per event from `event.next_seq`,
 | `beacon_stale_after_s` | int | 45 | 15 to 3600 | Admin panel | Stale-beacon chore (7.6); returned as `staleAfterS` on `GET /admin/beacons` for panel colouring (1.11) |
 | `flight_history_max_points` | int | 2000 | 100 to 50000 | Admin panel | Snapshot `event.flightHistory.points` thinning (1.3): a 7,200-point flight at 2,000 keeps every 4th point, about 110 KB in the snapshot |
 | `location_min_interval_ms` | int | 250 | 0 to 60000 | Admin panel | Location write path (7.2): the least time between two accepted fixes from one beacon on a node; 0 disables |
+| `hub_enabled` | bool | true | true or false | Admin panel | Live object `hubEnabled` (1.2): false takes every visitor off the hub and onto the poll within one poll |
 | `location_min_distance_m` | number | 0 | 0 to 10000 | Admin panel | Location write path (7.2): a fix that moved less than this from the beacon's last stored fix on the event is carried, not stored; 0 means only an exact repeat of `lat` and `lng` is carried |
 
 Only `PUT /admin/settings/{key}` changes a value. A missing row means the default. Every settings write is a snapshot-affecting write: the version bump makes every node re-read settings within a tick, and the writing node rewrites the live object so a new `poll_interval_ms` reaches the site. No other configuration lives in the database.
@@ -2382,6 +2386,7 @@ Tests the artifacts drive: Vitest on the site store, page selection, section reg
 - A third admin-pool group, `canvasser`, reaches exactly the QR and places routes; deletes stay admin.
 - The location ingest filter is the API's, and beacons stay blind to it. Three rules decide the outcome: the per-beacon min interval (`location_min_interval_ms` and the `beacon.min_interval_ms` override, in memory on the node; a fix inside the interval is `dropped` with no row and no publish), the optional min distance (`location_min_distance_m`, in the transaction against the beacon's last stored fix; a closer fix is carried), and one row per position per event (the unique `(event_id, lat, lng)` index, `on conflict do nothing`; a repeat of any position already in the event is carried). A carried fix still advances `event.next_seq` and moves the live object (contracts 1.2), so the site needs no change; the `LocationRow` and CSV gain `speedSource` (`beacon`, `derived`, or null) and `speedMps` on the live object is the beacon's value when present or the API-derived one.
 - A position is stored at most once per event: unique `(event_id, lat, lng)` on `location`, and the ingest insert runs `on conflict do nothing`; a repeat anywhere in the event is carried, so a replayed flight loops without growing the recording and beacons and the site stay unaware.
+- The hub can be switched off in two independent places, both in the API and the panel and neither in a beacon: per beacon (`hub_allowed`, denied at the authorize callback, the beacon falls to HTTP by its own contract) and for every visitor (`hub_enabled`, carried on the live object, the site runs on the poll). Beacons and the site never need a build for either.
 - Clearing a recording is `DELETE /admin/events/{id}/locations?beaconId=`: 204 on success, 409 while the event is live; `next_seq` is not reset; the audit action is `event.locations_cleared` and the site keeps whatever it holds until the leader's next tick rewrites the live object.
 
 ## 15. Needs a decision
