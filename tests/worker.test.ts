@@ -30,6 +30,8 @@ function makeDb(initial: Partial<SimRun> = {}): FakeDbHandle {
       lastFixAt: null,
       lastError: null,
       requestedBy: null,
+      seekTo: null,
+      seekAt: null,
       leaderState: null,
       leaderAt: null,
       updatedAt: new Date().toISOString(),
@@ -54,6 +56,25 @@ function makeDb(initial: Partial<SimRun> = {}): FakeDbHandle {
     async writeLeaderState(s) {
       state.row.leaderState = s;
       state.row.leaderAt = new Date().toISOString();
+    },
+    async clearSeekAndSetIndex(index: number) {
+      if (state.row.seekTo === index) {
+        state.row = {
+          ...state.row,
+          seekTo: null,
+          index,
+          updatedAt: new Date().toISOString(),
+        } as SimRun;
+      }
+    },
+    async dropSeek(index: number) {
+      if (state.row.seekTo === index) {
+        state.row = {
+          ...state.row,
+          seekTo: null,
+          updatedAt: new Date().toISOString(),
+        } as SimRun;
+      }
     },
     async close() {},
   };
@@ -98,10 +119,23 @@ function makeCache(points: LocationRow[]): CountedCache {
         eventId: 1,
         name: "2025",
         points,
+        series: {
+          pointCount: points.length,
+          firstRecordedAt: points[0]?.recordedAt ?? "",
+          lastRecordedAt: points.at(-1)?.recordedAt ?? "",
+          durationMs: 0,
+          hasAltitude: false,
+          speedSource: "recorded",
+          points: [],
+        },
         loadedAt: new Date().toISOString(),
         loadMs: 0,
       };
     },
+    async getOrLoadYear(year) {
+      return this.loadYear(year);
+    },
+    getCached: () => undefined,
     async refresh() {},
     cachedYears: () => [2025],
     lastLoad: () => ({ at: null, ms: null }),
@@ -247,6 +281,10 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
       async loadYear() {
         throw new ApiError(401, "unauthenticated", "key revoked");
       },
+      async getOrLoadYear() {
+        throw new ApiError(401, "unauthenticated", "key revoked");
+      },
+      getCached: () => undefined,
       async refresh() {},
       cachedYears: () => [],
       lastLoad: () => ({ at: null, ms: null }),
@@ -573,6 +611,174 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
     );
     expect(emitOrEndErrors).toEqual([]);
     expect(db.row.status).toBe("stopped");
+  });
+
+  it("seek while running re-arms the scheduler at the index and emits the point at once", async () => {
+    // A running row with a queued seek re-arms scheduler.start(index) (which
+    // emits at once) and the conditional clear-and-set-index runs so the row's
+    // index catches up.
+    const points = makePoints(50);
+    const db = makeDb({
+      status: "loading",
+      year: 2025,
+      speed: 20,
+      loop: true,
+      cycles: 0,
+      index: 0,
+      total: 0,
+    });
+    const cache = makeCache(points);
+    const stub = makeSyncScheduler();
+    const emits: Array<{ index: number }> = [];
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: (fix) => {
+        emits.push({ index: fix.point.seq - 1 });
+      },
+      onStop: () => undefined,
+      tickMs: 60_000,
+      startScheduler: stub.runningFactory,
+    });
+    // Load the flight and flip to running.
+    await worker.tick();
+    expect(db.row.status).toBe("running");
+    // Emit a few points as if the scheduler had been running.
+    stub.emitOne();
+    stub.emitOne();
+    stub.emitOne();
+    // Operator drops a seek to index 30 on the row.
+    await db.update({ seekTo: 30, seekAt: new Date().toISOString() });
+    // Next tick: the worker re-arms at 30 and the conditional clear runs.
+    await worker.tick();
+    // seek_to cleared and index moved.
+    expect(db.row.seekTo).toBeNull();
+    expect(db.row.index).toBe(30);
+    // The scheduler is running at index 30; a following emit is index 30.
+    stub.emitOne();
+    expect(emits.at(-1)?.index).toBe(30);
+    await worker.stop();
+  });
+
+  it("seek while stopped emits exactly one point, stays stopped, clears seek_to and persists index", async () => {
+    // A stopped run with a year on the row peeks at the seek's index through
+    // onEmit and persists the row's index; status stays stopped so Start
+    // resumes from there.
+    const points = makePoints(20);
+    const db = makeDb({
+      status: "stopped",
+      year: 2025,
+      speed: 20,
+      loop: true,
+      cycles: 0,
+      index: 0,
+      total: 0,
+      seekTo: 12,
+      seekAt: new Date().toISOString(),
+    });
+    const cache = makeCache(points);
+    const stub = makeSyncScheduler();
+    const emits: Array<{ index: number }> = [];
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: (fix) => {
+        emits.push({ index: fix.point.seq - 1 });
+      },
+      onStop: () => undefined,
+      tickMs: 60_000,
+      startScheduler: stub.runningFactory,
+    });
+    await worker.tick();
+    // Exactly one peek emit happened.
+    expect(emits.length).toBe(1);
+    expect(emits[0]!.index).toBe(12);
+    // Row still stopped.
+    expect(db.row.status).toBe("stopped");
+    // seek_to cleared and index persisted.
+    expect(db.row.seekTo).toBeNull();
+    expect(db.row.index).toBe(12);
+    await worker.stop();
+  });
+
+  it("the latest of three quick seeks wins", async () => {
+    // A drag: the API stamps seek_to three times before the worker tick fires.
+    // The worker sees the latest value and acts on it; the conditional clear
+    // keys on the value the worker acted on so an even newer one would stay.
+    const points = makePoints(50);
+    const db = makeDb({
+      status: "loading",
+      year: 2025,
+      speed: 20,
+      loop: true,
+      cycles: 0,
+      index: 0,
+      total: 0,
+    });
+    const cache = makeCache(points);
+    const stub = makeSyncScheduler();
+    const emits: Array<{ index: number }> = [];
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: (fix) => {
+        emits.push({ index: fix.point.seq - 1 });
+      },
+      onStop: () => undefined,
+      tickMs: 60_000,
+      startScheduler: stub.runningFactory,
+    });
+    await worker.tick();
+    expect(db.row.status).toBe("running");
+    // Three seeks in a row: the last one wins.
+    await db.update({ seekTo: 5, seekAt: new Date().toISOString() });
+    await db.update({ seekTo: 12, seekAt: new Date().toISOString() });
+    await db.update({ seekTo: 25, seekAt: new Date().toISOString() });
+    await worker.tick();
+    expect(db.row.seekTo).toBeNull();
+    expect(db.row.index).toBe(25);
+    stub.emitOne();
+    expect(emits.at(-1)?.index).toBe(25);
+    await worker.stop();
+  });
+
+  it("seek while failed is cleared without an emit", async () => {
+    const points = makePoints(10);
+    const db = makeDb({
+      status: "failed",
+      year: 2025,
+      speed: 20,
+      loop: true,
+      cycles: 0,
+      index: 0,
+      lastError: "boom",
+      seekTo: 4,
+      seekAt: new Date().toISOString(),
+    });
+    const cache = makeCache(points);
+    const stub = makeSyncScheduler();
+    const emits: Array<{ index: number }> = [];
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: (fix) => {
+        emits.push({ index: fix.point.seq - 1 });
+      },
+      onStop: () => undefined,
+      tickMs: 60_000,
+      startScheduler: stub.runningFactory,
+    });
+    await worker.tick();
+    // No emit; seek_to cleared; index untouched.
+    expect(emits.length).toBe(0);
+    expect(db.row.seekTo).toBeNull();
+    expect(db.row.index).toBe(0);
+    expect(db.row.status).toBe("failed");
+    await worker.stop();
   });
 
   it("the tickMs defaults to 250 ms so a control change lands within a quarter second", async () => {

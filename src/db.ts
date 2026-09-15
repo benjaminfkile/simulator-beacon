@@ -43,6 +43,8 @@ export interface SimRun {
   lastFixAt: string | null;
   lastError: string | null;
   requestedBy: string | null;
+  seekTo: number | null;
+  seekAt: string | null;
   leaderState: Record<string, unknown> | null;
   leaderAt: string | null;
   updatedAt: string;
@@ -60,6 +62,8 @@ export interface SimRunUpdate {
   lastFixAt?: string | null;
   lastError?: string | null;
   requestedBy?: string | null;
+  seekTo?: number | null;
+  seekAt?: string | null;
 }
 
 export interface DbOptions {
@@ -76,6 +80,15 @@ export interface Db {
   read(): Promise<SimRun>;
   update(patch: SimRunUpdate): Promise<SimRun>;
   writeLeaderState(state: Record<string, unknown>): Promise<void>;
+  // Set seek_to to null and index to $1 only when seek_to is still $1. Several
+  // seeks in a row (a drag) leave the latest one standing: our clear runs on
+  // whatever the row holds at the time, and a newer value survives (the
+  // conditional does not match) so the worker acts on it on the next tick.
+  clearSeekAndSetIndex(index: number): Promise<void>;
+  // Clear seek_to without touching index. Used when the worker cannot act on
+  // the seek (loading, failed): the request is dropped and the row's index
+  // stays where the worker last put it.
+  dropSeek(index: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -109,12 +122,18 @@ const ALTER_ADD_LOOP_SQL = `
 const ALTER_ADD_CYCLES_SQL = `
   alter table sim_run add column if not exists cycles integer not null default 0;
 `;
+const ALTER_ADD_SEEK_TO_SQL = `
+  alter table sim_run add column if not exists seek_to integer;
+`;
+const ALTER_ADD_SEEK_AT_SQL = `
+  alter table sim_run add column if not exists seek_at timestamptz;
+`;
 
 const INSERT_ROW_SQL = `insert into sim_run (id) values (1) on conflict do nothing;`;
 
 const SELECT_ROW_SQL = `
   select status, year, speed, loop, cycles, index, total, started_at, last_fix_at,
-         last_error, requested_by, leader_state, leader_at, updated_at
+         last_error, requested_by, seek_to, seek_at, leader_state, leader_at, updated_at
     from sim_run where id = 1
 `;
 
@@ -139,6 +158,8 @@ function rowToSimRun(row: Record<string, unknown>): SimRun {
     lastFixAt: isoOrNull(row.last_fix_at),
     lastError: (row.last_error as string | null) ?? null,
     requestedBy: (row.requested_by as string | null) ?? null,
+    seekTo: row.seek_to == null ? null : Number(row.seek_to),
+    seekAt: isoOrNull(row.seek_at),
     leaderState:
       row.leader_state == null
         ? null
@@ -202,6 +223,8 @@ export function createDb(opts: DbOptions): Db {
       await c.query(CREATE_TABLE_SQL);
       await c.query(ALTER_ADD_LOOP_SQL);
       await c.query(ALTER_ADD_CYCLES_SQL);
+      await c.query(ALTER_ADD_SEEK_TO_SQL);
+      await c.query(ALTER_ADD_SEEK_AT_SQL);
       await c.query(INSERT_ROW_SQL);
     });
   }
@@ -233,11 +256,13 @@ export function createDb(opts: DbOptions): Db {
     if (patch.lastFixAt !== undefined) push("last_fix_at", patch.lastFixAt);
     if (patch.lastError !== undefined) push("last_error", patch.lastError);
     if (patch.requestedBy !== undefined) push("requested_by", patch.requestedBy);
+    if (patch.seekTo !== undefined) push("seek_to", patch.seekTo);
+    if (patch.seekAt !== undefined) push("seek_at", patch.seekAt);
     sets.push(`updated_at = now()`);
     const sql = `update sim_run set ${sets.join(", ")} where id = 1
                  returning status, year, speed, loop, cycles, index, total, started_at,
-                          last_fix_at, last_error, requested_by, leader_state,
-                          leader_at, updated_at`;
+                          last_fix_at, last_error, requested_by, seek_to, seek_at,
+                          leader_state, leader_at, updated_at`;
     return withClient(async (c) => {
       const r = await c.query<Record<string, unknown>>(sql, values);
       const row = r.rows[0];
@@ -255,9 +280,27 @@ export function createDb(opts: DbOptions): Db {
     });
   }
 
+  async function clearSeekAndSetIndex(index: number): Promise<void> {
+    await withClient(async (c) => {
+      await c.query(
+        `update sim_run set seek_to = null, index = $1 where id = 1 and seek_to = $1`,
+        [index],
+      );
+    });
+  }
+
+  async function dropSeek(index: number): Promise<void> {
+    await withClient(async (c) => {
+      await c.query(
+        `update sim_run set seek_to = null where id = 1 and seek_to = $1`,
+        [index],
+      );
+    });
+  }
+
   async function close(): Promise<void> {
     await pool.end();
   }
 
-  return { init, read, update, writeLeaderState, close };
+  return { init, read, update, writeLeaderState, clearSeekAndSetIndex, dropSeek, close };
 }
