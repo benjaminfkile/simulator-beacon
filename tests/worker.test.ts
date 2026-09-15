@@ -3,7 +3,7 @@
 // index persistence every ten fixes and the run-failed path when the flights
 // API refuses.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { startWorker } from "../src/worker.js";
 import type { Db, SimRun, SimRunUpdate } from "../src/db.js";
 import type { FlightsCache } from "../src/flights/cache.js";
@@ -25,6 +25,7 @@ function makeDb(initial: Partial<SimRun> = {}): FakeDbHandle {
       cycles: 0,
       index: 0,
       total: 0,
+      nextFixInMs: null,
       startedAt: null,
       lastFixAt: null,
       lastError: null,
@@ -405,7 +406,7 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
     await worker.stop();
   });
 
-  it("writes leader_state and leader_at on every tick", async () => {
+  it("writes leader_state on every fourth tick (about once a second at tickMs=250)", async () => {
     const db = makeDb({ status: "stopped" });
     const cache = makeCache([]);
     const stub = makeSyncScheduler();
@@ -421,9 +422,189 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
     });
     await worker.tick();
     await worker.tick();
-    expect(build).toBeGreaterThanOrEqual(2);
-    expect(db.row.leaderState).toEqual({ tick: build });
+    await worker.tick();
+    // Three ticks: no leader_state write yet (persist every 4th).
+    expect(db.row.leaderAt).toBeNull();
+    await worker.tick();
+    // The fourth tick writes it.
     expect(db.row.leaderAt).not.toBeNull();
+    expect(build).toBeGreaterThanOrEqual(1);
+    const buildAfterFour = build;
+    // Three more ticks: still the same write.
+    await worker.tick();
+    await worker.tick();
+    await worker.tick();
+    expect(build).toBe(buildAfterFour);
+    // The eighth tick writes again.
+    await worker.tick();
+    expect(build).toBe(buildAfterFour + 1);
     await worker.stop();
+  });
+
+  it("writes leader_state immediately after a status change the worker made", async () => {
+    // A stopped row plus a Start (loading -> running) is a worker-made
+    // status change; the write happens inline rather than waiting for the
+    // fourth tick.
+    const db = makeDb({
+      status: "loading",
+      year: 2025,
+      speed: 20,
+      index: 0,
+      total: 0,
+    });
+    const cache = makeCache(makePoints(5));
+    const stub = makeSyncScheduler();
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: () => undefined,
+      onStop: () => undefined,
+      tickMs: 60_000,
+      startScheduler: stub.runningFactory,
+    });
+    await worker.tick();
+    // loadAndStart moved status loading -> running; leader_state was written
+    // immediately (not after four ticks).
+    expect(db.row.leaderAt).not.toBeNull();
+    expect(db.row.status).toBe("running");
+    await worker.stop();
+  });
+
+  it("carries the live index and cycles after a loop restart in leader_state.run", async () => {
+    // Use persistLeaderStateEveryTicks=1 so each tick writes leader_state and
+    // the test doesn't need to wait through the 4-tick cadence.
+    const db = makeDb({
+      status: "loading",
+      year: 2025,
+      speed: 20,
+      loop: true,
+      cycles: 0,
+      index: 0,
+    });
+    const cache = makeCache(makePoints(3));
+    const stub = makeSyncScheduler();
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: () => undefined,
+      onStop: () => undefined,
+      tickMs: 60_000,
+      persistLeaderStateEveryTicks: 1,
+      startScheduler: stub.runningFactory,
+    });
+    await worker.tick();
+    stub.emitOne();
+    stub.emitOne();
+    stub.emitOne();
+    stub.emitEnd();
+    // Loop restart bumped cycles on the row; a subsequent tick reads the row
+    // and writes leader_state with the live cycles.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    await worker.tick();
+    expect(db.row.leaderState).not.toBeNull();
+    const run = (db.row.leaderState as Record<string, unknown>).run as
+      | Record<string, unknown>
+      | undefined;
+    // After the loop the run resumed at index 0 with cycles bumped to 1.
+    expect(run?.cycles).toBe(1);
+    expect(run?.index).toBe(0);
+    await worker.stop();
+  });
+
+  it("Stop during the end-of-run await does not throw and the row ends stopped", async () => {
+    // The end-of-run race: handleEnd captures `active` at the top, so a Stop
+    // pressed as the last point goes out never touches a nulled scheduler.
+    const resolveUpdateRef: { fn: (() => void) | null } = { fn: null };
+    const db = makeDb({
+      status: "loading",
+      year: 2025,
+      speed: 20,
+      loop: false,
+      cycles: 0,
+      index: 0,
+    });
+    const cache = makeCache(makePoints(2));
+    const stub = makeSyncScheduler();
+    const errors: Array<Record<string, unknown>> = [];
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: () => undefined,
+      onStop: () => undefined,
+      tickMs: 60_000,
+      startScheduler: stub.runningFactory,
+      log: { error: (obj) => errors.push(obj) },
+    });
+    // Swap the db.update() with one whose end-of-run write hangs until we
+    // resolve it, so we can drop Stop into the await window.
+    const realUpdate = db.update.bind(db);
+    let seenStoppedUpdate = false;
+    db.update = async (patch) => {
+      if (patch.status === "stopped") {
+        seenStoppedUpdate = true;
+        await new Promise<void>((r) => {
+          resolveUpdateRef.fn = r;
+        });
+      }
+      return realUpdate(patch);
+    };
+    await worker.tick();
+    stub.emitOne();
+    stub.emitOne();
+    stub.emitEnd();
+    // The stopped update is in flight; call Stop, which nulls active. If the
+    // capture-run-at-top fix isn't in place, handleEnd would try to touch a
+    // nulled active after the update resolves and throw.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seenStoppedUpdate).toBe(true);
+    await worker.stop();
+    // Now resolve the hanging update to let handleEnd finish.
+    resolveUpdateRef.fn?.();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    // No thrown-through error should have been logged from the handler.
+    const emitOrEndErrors = errors.filter((e) =>
+      typeof e === "object" &&
+      typeof (e as { err?: unknown }).err === "string",
+    );
+    expect(emitOrEndErrors).toEqual([]);
+    expect(db.row.status).toBe("stopped");
+  });
+
+  it("the tickMs defaults to 250 ms so a control change lands within a quarter second", async () => {
+    // Fake timers verify the recurring cadence: each 250 ms elapses one tick.
+    vi.useFakeTimers();
+    try {
+      const db = makeDb({ status: "stopped" });
+      const cache = makeCache([]);
+      const stub = makeSyncScheduler();
+      let readCount = 0;
+      const originalRead = db.read;
+      db.read = async () => {
+        readCount += 1;
+        return originalRead();
+      };
+      const worker = startWorker({
+        db,
+        cache,
+        buildLeaderState: () => ({}),
+        onEmit: () => undefined,
+        onStop: () => undefined,
+        startScheduler: stub.runningFactory,
+      });
+      // Advance one tick's worth: exactly one read.
+      await vi.advanceTimersByTimeAsync(250);
+      expect(readCount).toBe(1);
+      // Three more ticks: four reads total.
+      await vi.advanceTimersByTimeAsync(750);
+      expect(readCount).toBe(4);
+      await worker.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

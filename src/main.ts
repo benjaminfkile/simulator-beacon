@@ -74,6 +74,10 @@ function startCore(args: {
         { err: err instanceof Error ? err.message : String(err) },
         "hub build failed; backing off",
       ),
+    log: {
+      info: (msg) => log.info(msg),
+      warn: (msg) => log.warn(msg),
+    },
   });
 
   const sendLoop = startSendLoop({
@@ -81,6 +85,12 @@ function startCore(args: {
     rest,
     getHub: () => hub,
     ingestChannel: config.ingestChannel,
+    onHubRejectionThreshold: () => {
+      // Contracts 9.2: three consecutive hub rejections while `socketState`
+      // stays `connected` ask the socket loop to re-join once. The rejoin
+      // itself increments `rejoinCount` and takes the failure branch on throw.
+      void socket.rejoin();
+    },
   });
 
   const heartbeat = startHeartbeatLoop({
@@ -118,6 +128,7 @@ function startCore(args: {
         transport: {
           socketState: state.socketState,
           reconnectCount: state.reconnectCount,
+          rejoinCount: state.rejoinCount,
           httpFallbackSeconds: state.httpFallbackSeconds,
           lastReceiptLatencyMs: state.lastReceiptLatencyMs,
           sendsFailedSinceBoot: state.sendsFailedSinceBoot,
@@ -161,6 +172,25 @@ async function main(): Promise<void> {
   const version = readVersion();
   const bootMs = Date.now();
   const instance = process.env.HOSTNAME ?? "local";
+
+  // A beacon never gives up: an unhandled rejection or a synchronous throw
+  // that escapes anything in the loops is logged at error and swallowed so
+  // the process keeps running (simulator-beacon.md 2, contracts 9.2).
+  process.on("unhandledRejection", (reason) => {
+    log.error(
+      {
+        err: reason instanceof Error ? reason.message : String(reason),
+        stack: reason instanceof Error ? reason.stack : undefined,
+      },
+      "unhandledRejection",
+    );
+  });
+  process.on("uncaughtException", (err) => {
+    log.error(
+      { err: err.message, stack: err.stack },
+      "uncaughtException",
+    );
+  });
 
   const db: Db = createDb({ connectionString: config.dbConnection });
   await db.init();
@@ -261,6 +291,9 @@ async function main(): Promise<void> {
         core?.sendLoop.wake();
       },
       onStop: () => undefined,
+      log: {
+        error: (obj, msg) => log.error(obj, msg),
+      },
     });
   }
 

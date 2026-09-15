@@ -7,11 +7,25 @@
 //  - failed send while lastHeartbeat.liveEventId is null: log at most once per
 //    minute, do NOT increment sendsFailedSinceBoot.
 //  - failed send otherwise: increment sendsFailedSinceBoot and attempt.
+//
+// The HTTP window (contracts 9.2): an HTTP send starts no sooner than
+// HTTP_FALLBACK_INTERVAL_MS after the previous HTTP send started; a fix
+// arriving inside the window replaces latestFix and the newest goes out when
+// the window ends; a socket that connects during the window takes the fix.
+// The hub door has no window.
+//
+// Three consecutive hub rejections while `socketState == connected` ask the
+// socket loop to re-join the ingest channel once via `onHubRejectionThreshold`;
+// the counter resets on any delivered send. The rejoin path is the same as
+// `channelEvicted auth_expired` (see socketLoop.ts).
 
 import { backoffMs } from "./backoff.js";
 import type { HubClient } from "./hub.js";
 import type { LatestFix, BeaconState } from "./state.js";
 import type { LocationBody, Rest } from "./rest.js";
+
+export const HTTP_FALLBACK_INTERVAL_MS = 1000;
+export const HUB_REJECTION_REJOIN_THRESHOLD = 3;
 
 export interface SendLoopOptions {
   state: BeaconState;
@@ -19,9 +33,11 @@ export interface SendLoopOptions {
   getHub: () => HubClient | null;
   ingestChannel: string;
   intervalMs?: number;
+  httpFallbackIntervalMs?: number;
   now?: () => number;
   onSent?: (fix: LatestFix, viaHub: boolean, receiptLatencyMs: number) => void;
   onFailed?: (viaHub: boolean, reason: string) => void;
+  onHubRejectionThreshold?: () => void;
 }
 
 export type SendDecision =
@@ -60,6 +76,7 @@ export interface SendLoop {
 
 export function startSendLoop(opts: SendLoopOptions): SendLoop {
   const intervalMs = opts.intervalMs ?? 1000;
+  const httpWindowMs = opts.httpFallbackIntervalMs ?? HTTP_FALLBACK_INTERVAL_MS;
   const now = opts.now ?? (() => Date.now());
   const state = opts.state;
   let inFlight = false;
@@ -67,11 +84,13 @@ export function startSendLoop(opts: SendLoopOptions): SendLoop {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let noLiveLoggedAt = 0;
+  let lastHttpSendStartedAt = -Infinity;
+  let consecutiveHubRejections = 0;
 
   function schedule(ms: number) {
     if (timer) clearTimeout(timer);
     if (stopped) return;
-    timer = setTimeout(() => void tick(), ms);
+    timer = setTimeout(() => void tick(), Math.max(0, ms));
   }
 
   async function tick(): Promise<void> {
@@ -80,6 +99,16 @@ export function startSendLoop(opts: SendLoopOptions): SendLoop {
     if (decision.action === "skip") {
       schedule(intervalMs);
       return;
+    }
+    if (decision.action === "http") {
+      const remaining = httpWindowMs - (now() - lastHttpSendStartedAt);
+      if (remaining > 0) {
+        // Wait out the HTTP window; when it ends we re-decide (a fix arriving
+        // meanwhile is already in `latestFix`; a socket that connects during
+        // the window will take the fix).
+        schedule(remaining);
+        return;
+      }
     }
     const fix = state.latestFix!;
     inFlight = true;
@@ -98,6 +127,7 @@ export function startSendLoop(opts: SendLoopOptions): SendLoop {
           onFail(true, err instanceof Error ? err.message : String(err));
         }
       } else {
+        lastHttpSendStartedAt = started;
         const res = await opts.rest.postLocation(toBody(fix));
         if (res.ok) {
           state.httpFallbackSeconds += (now() - started) / 1000;
@@ -115,6 +145,7 @@ export function startSendLoop(opts: SendLoopOptions): SendLoop {
     state.lastDeliveredSeqLocal = fix.seqLocal;
     state.lastReceiptLatencyMs = latency;
     attempt = 0;
+    consecutiveHubRejections = 0;
     opts.onSent?.(fix, viaHub, latency);
     // A new fix may already be waiting; try again immediately.
     schedule(0);
@@ -131,6 +162,21 @@ export function startSendLoop(opts: SendLoopOptions): SendLoop {
       }
     }
     opts.onFailed?.(viaHub, reason);
+    if (viaHub && state.socketState === "connected") {
+      consecutiveHubRejections += 1;
+      if (consecutiveHubRejections >= HUB_REJECTION_REJOIN_THRESHOLD) {
+        consecutiveHubRejections = 0;
+        try {
+          opts.onHubRejectionThreshold?.();
+        } catch {
+          // The socket loop takes its own failure branch inside rejoin(); a
+          // callback throw shouldn't escape into the send loop.
+        }
+      }
+    } else {
+      // A failure via HTTP does not add to the hub-rejection counter, but a
+      // hub failure while the socket is not `connected` shouldn't either.
+    }
     const wait = backoffMs(attempt);
     attempt += 1;
     schedule(wait);

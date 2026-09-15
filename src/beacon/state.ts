@@ -25,6 +25,7 @@ export interface BeaconState {
   latestFix: LatestFix | null;
   lastDeliveredSeqLocal: number;
   reconnectCount: number;
+  rejoinCount: number;
   sendsFailedSinceBoot: number;
   lastReceiptLatencyMs: number | null;
   httpFallbackSeconds: number;
@@ -40,6 +41,7 @@ export function createBeaconState(): BeaconState {
     latestFix: null,
     lastDeliveredSeqLocal: 0,
     reconnectCount: 0,
+    rejoinCount: 0,
     sendsFailedSinceBoot: 0,
     lastReceiptLatencyMs: null,
     httpFallbackSeconds: 0,

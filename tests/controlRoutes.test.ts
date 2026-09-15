@@ -44,6 +44,7 @@ function makeFakeDb(initial: Partial<SimRun> = {}): Db {
     cycles: 0,
     index: 0,
     total: 0,
+    nextFixInMs: null,
     startedAt: null,
     lastFixAt: null,
     lastError: null,
@@ -412,6 +413,130 @@ describe("control API (simulator-beacon.md 5)", () => {
     const res = await inject(server, "PATCH", "/control/run", token, { loop: "yes" });
     expect(res.statusCode).toBe(400);
     expect(res.json().code).toBe("validation_failed");
+    await server.close();
+  });
+
+  it("POST /control/start resumes from the row's index on the same year and 0 <= index < total", async () => {
+    // Stop keeps the index; a subsequent Start with the same year and speed
+    // resumes from that index (Stop then Start = pause / resume).
+    const db = makeFakeDb({
+      status: "stopped",
+      year: 2025,
+      speed: 20,
+      index: 42,
+      total: 100,
+    });
+    const server = await buildServer(
+      db,
+      makeFakeCache([{ year: 2025, eventId: 1, name: "2025", pointCount: 100 }]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "POST", "/control/start", token, {
+      year: 2025,
+      speed: 20,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.run.status).toBe("loading");
+    expect(body.run.index).toBe(42);
+    expect(body.run.total).toBe(100);
+    await server.close();
+  });
+
+  it("POST /control/start starts from 0 when the requested year differs from the row's", async () => {
+    const db = makeFakeDb({
+      status: "stopped",
+      year: 2024,
+      speed: 20,
+      index: 42,
+      total: 100,
+    });
+    const server = await buildServer(
+      db,
+      makeFakeCache([
+        { year: 2024, eventId: 1, name: "2024", pointCount: 100 },
+        { year: 2025, eventId: 2, name: "2025", pointCount: 300 },
+      ]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "POST", "/control/start", token, {
+      year: 2025,
+      speed: 20,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.run.year).toBe(2025);
+    expect(body.run.index).toBe(0);
+    expect(body.run.total).toBe(0);
+    await server.close();
+  });
+
+  it("POST /control/start starts from 0 when index equals total (ended without loop)", async () => {
+    const db = makeFakeDb({
+      status: "stopped",
+      year: 2025,
+      speed: 20,
+      index: 100,
+      total: 100,
+    });
+    const server = await buildServer(
+      db,
+      makeFakeCache([{ year: 2025, eventId: 1, name: "2025", pointCount: 100 }]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "POST", "/control/start", token, {
+      year: 2025,
+      speed: 20,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.run.year).toBe(2025);
+    expect(body.run.index).toBe(0);
+    await server.close();
+  });
+
+  it("GET /control/state reports run.index and run.cycles from leader_state.run when fresh", async () => {
+    const db = makeFakeDb({
+      status: "running",
+      year: 2025,
+      speed: 20,
+      index: 10,
+      cycles: 0,
+      total: 100,
+    });
+    // Simulate a fresh leader_state write with live values.
+    await db.writeLeaderState({
+      name: "simulator",
+      run: { index: 55, cycles: 3, speed: 20, nextFixInMs: 240, status: "running" },
+    });
+    const server = await buildServer(db, makeFakeCache([]));
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "GET", "/control/state", token);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.run.index).toBe(55);
+    expect(body.run.cycles).toBe(3);
+    expect(body.run.nextFixInMs).toBe(240);
+    await server.close();
+  });
+
+  it("GET /control/state falls back to the row's index/cycles when leader_state is stale", async () => {
+    const db = makeFakeDb({
+      status: "running",
+      year: 2025,
+      speed: 20,
+      index: 12,
+      cycles: 4,
+      total: 100,
+    });
+    const server = await buildServer(db, makeFakeCache([]));
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "GET", "/control/state", token);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.run.index).toBe(12);
+    expect(body.run.cycles).toBe(4);
+    expect(body.run.nextFixInMs).toBeNull();
     await server.close();
   });
 

@@ -85,15 +85,32 @@ function buildStateBody(row: SimRun, instance: string | null) {
     : null;
   const leaderAtMs = row.leaderAt ? Date.parse(row.leaderAt) : NaN;
   const fresh = Number.isFinite(leaderAtMs) && Date.now() - leaderAtMs <= 10_000;
+  // Live index/cycles/nextFixInMs come from leader_state when fresh so
+  // GET /control/state follows the scheduler within a second; else they fall
+  // back to the row (the persisted `index` every ten fixes, `cycles` on
+  // status writes, `nextFixInMs` null).
+  const liveRun =
+    fresh && leaderState && leaderState.run && typeof leaderState.run === "object"
+      ? (leaderState.run as Record<string, unknown>)
+      : null;
+  const liveIndex =
+    liveRun && typeof liveRun.index === "number" ? liveRun.index : row.index;
+  const liveCycles =
+    liveRun && typeof liveRun.cycles === "number" ? liveRun.cycles : row.cycles;
+  const liveNextFixInMs =
+    liveRun && typeof liveRun.nextFixInMs === "number"
+      ? liveRun.nextFixInMs
+      : null;
   return {
     run: {
       status: row.status,
       year: row.year,
       speed: row.speed,
       loop: row.loop,
-      cycles: row.cycles,
-      index: row.index,
+      cycles: liveCycles,
+      index: liveIndex,
       total: row.total,
+      nextFixInMs: liveNextFixInMs,
       startedAt: row.startedAt,
       lastFixAt: row.lastFixAt,
       lastError: row.lastError,
@@ -207,12 +224,21 @@ export async function buildControlServer(
         }),
       );
     }
+    // Start resumes (simulator-beacon.md 4): keep the row's index when the
+    // requested year equals the row's year and 0 <= index < total; a run that
+    // ended without loop (index == total) starts from 0. Restart is from 0 as
+    // before; Stop keeps the index, so Stop then Start pauses and resumes.
+    const sameYear = current.year === year;
+    const resumeIndex =
+      sameYear && current.index >= 0 && current.index < current.total
+        ? current.index
+        : 0;
     const patched = await opts.db.update({
       status: "loading",
       year: year as number,
       speed: speed as Speed,
-      index: 0,
-      total: 0,
+      index: resumeIndex,
+      total: sameYear ? current.total : 0,
       startedAt: null,
       lastError: null,
       requestedBy: principal.email ?? principal.username ?? principal.sub,

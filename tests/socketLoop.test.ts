@@ -236,6 +236,74 @@ describe("hub ChannelEvent envelope routing (contracts 2.3, 9.2)", () => {
     expect(state.socketState).toBe("disconnected");
   });
 
+  it("rejoin() re-invokes JoinPrivateChannel on the current connection and increments rejoinCount", async () => {
+    // Contracts 9.2: three consecutive hub rejections while `socketState`
+    // stays `connected` ask the socket loop to re-join once, via
+    // socketLoop.rejoin(). Every re-invocation increments rejoinCount on the
+    // transport telemetry.
+    const state = createBeaconState();
+    let hub!: CountingHub;
+    const loop = startSocketLoop({
+      build: () => (hub = new CountingHub()),
+      ingestChannel: "x:ingest",
+      key: "wbk_x",
+      state,
+      sleep: yieldMacrotask,
+    });
+    await drain();
+    expect(state.socketState).toBe("connected");
+    expect(hub.joinCount).toBe(1);
+    expect(state.rejoinCount).toBe(0);
+
+    await loop.rejoin();
+    expect(hub.joinCount).toBe(2);
+    expect(state.rejoinCount).toBe(1);
+    expect(state.socketState).toBe("connected");
+
+    await loop.stop();
+    expect(state.socketState).toBe("disconnected");
+  });
+
+  it("rejoin() that throws takes the failure branch so the send loop falls back to HTTP", async () => {
+    const state = createBeaconState();
+    class ThrowingRejoinHub extends FakeHubClient {
+      public joinCount = 0;
+      override invoke<T = unknown>(method: string, ...args: unknown[]): Promise<T> {
+        if (method === "JoinPrivateChannel") {
+          this.joinCount += 1;
+          if (this.joinCount === 1) return Promise.resolve(undefined as unknown as T);
+          return Promise.reject(new Error("evicted"));
+        }
+        return super.invoke<T>(method, ...args);
+      }
+    }
+    let hub!: ThrowingRejoinHub;
+    // Use a sleep that never resolves so the outer loop doesn't reconnect
+    // before the test checks state.
+    const neverSleep = () => new Promise<void>(() => {});
+    const loop = startSocketLoop({
+      build: () => (hub = new ThrowingRejoinHub()),
+      ingestChannel: "x:ingest",
+      key: "wbk_x",
+      state,
+      sleep: neverSleep,
+    });
+    // The outer loop's inner "sleep(1000)" is neverSleep, so as soon as
+    // markConnected sets state to "connected" the loop parks. Give the
+    // Promise.resolve().then(loop) chain a chance to reach that point.
+    for (let i = 0; i < 10; i++) await yieldMacrotask();
+    expect(state.socketState).toBe("connected");
+    expect(hub.joinCount).toBe(1);
+    // Trigger a rejoin that throws.
+    await loop.rejoin();
+    // rejoinCount incremented (every re-invocation counts).
+    expect(state.rejoinCount).toBe(1);
+    // The failure branch dropped the connection; state is "reconnecting" and
+    // the send loop's `decide()` will now pick the HTTP door.
+    expect(state.socketState).toBe("reconnecting");
+    await loop.stop();
+  });
+
   it("ignores envelopes for channels this beacon did not join", async () => {
     const state = createBeaconState();
     let hub!: CountingHub;
