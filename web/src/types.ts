@@ -10,6 +10,7 @@ export interface SimRun {
   cycles: number;
   index: number;
   total: number;
+  nextFixInMs: number | null;
   startedAt: string | null;
   lastFixAt: string | null;
   lastError: string | null;
@@ -54,3 +55,27 @@ export interface ApiErrorBody {
 
 export const ALLOWED_SPEEDS = [1, 2, 5, 10, 20, 60] as const;
 export type Speed = (typeof ALLOWED_SPEEDS)[number];
+
+export type SpeedSource = "recorded" | "derived" | "mixed";
+
+export interface FlightSeriesPoint {
+  i: number;
+  t: number;
+  lat: number;
+  lng: number;
+  speedMps: number | null;
+  altitudeM: number | null;
+}
+
+export interface FlightSeries {
+  year: number;
+  eventId: number;
+  name: string;
+  pointCount: number;
+  firstRecordedAt: string;
+  lastRecordedAt: string;
+  durationMs: number;
+  hasAltitude: boolean;
+  speedSource: SpeedSource;
+  points: FlightSeriesPoint[];
+}

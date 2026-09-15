@@ -4,7 +4,7 @@ import styles from "./App.module.css";
 import { loadWebConfig } from "./config.js";
 import { ADMIN_GROUP, createUserManager, snapshotFromUser, type SessionSnapshot } from "./auth.js";
 import { ApiError, createApiClient, type ApiClient } from "./api.js";
-import type { ControlState, YearItem, Speed } from "./types.js";
+import type { ControlState, FlightSeries, YearItem, Speed } from "./types.js";
 import { ConfigurationNotice } from "./ConfigurationNotice.js";
 import { StateCard } from "./StateCard.js";
 
@@ -212,6 +212,11 @@ export function ControlPanel(props: ControlPanelProps) {
   const [selectedLoop, setSelectedLoop] = useState<boolean>(true);
   const [errorLine, setErrorLine] = useState<string | null>(null);
   const [busy, setBusy] = useState<"" | "start" | "stop" | "restart">("");
+  // The flight series is fetched from GET /control/flight for the selected
+  // year and kept per-year so a year toggle does not refetch the same set.
+  const flightCacheRef = useRef<Map<number, FlightSeries>>(new Map());
+  const [flight, setFlight] = useState<FlightSeries | null>(null);
+  const [flightError, setFlightError] = useState<string | null>(null);
   // The selects and the switch are seeded once from the row (or the years
   // list) and then belong to the operator: a poll never overwrites a choice.
   const yearSeededRef = useRef<boolean>(false);
@@ -353,7 +358,7 @@ export function ControlPanel(props: ControlPanelProps) {
   // effect (simulator-beacon.md 5); while stopped the choice is what Start
   // will use — the PATCH still lands so the row stays in sync.
   const patchRun = useCallback(
-    async (body: { year?: number; speed?: Speed; loop?: boolean }): Promise<void> => {
+    async (body: { year?: number; speed?: Speed; loop?: boolean; index?: number }): Promise<void> => {
       try {
         const next = await api.patchRun(body);
         setState(next);
@@ -393,6 +398,53 @@ export function ControlPanel(props: ControlPanelProps) {
     [patchRun],
   );
 
+  // Fetch the flight series for the selected year, once on load and on every
+  // year change. Cached in memory per year so a re-selection is instant.
+  useEffect(() => {
+    if (selectedYear === "") {
+      setFlight(null);
+      setFlightError(null);
+      return;
+    }
+    const cached = flightCacheRef.current.get(selectedYear);
+    if (cached) {
+      setFlight(cached);
+      setFlightError(null);
+      return;
+    }
+    let cancelled = false;
+    setFlight(null);
+    setFlightError(null);
+    (async (): Promise<void> => {
+      try {
+        const res = await api.getFlight(selectedYear);
+        if (cancelled) return;
+        flightCacheRef.current.set(selectedYear, res);
+        setFlight(res);
+      } catch (err) {
+        if (cancelled) return;
+        const msg =
+          err instanceof ApiError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        setFlightError(msg);
+        setErrorLine(msg);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, selectedYear]);
+
+  const onSeek = useCallback(
+    (index: number): void => {
+      void patchRun({ index });
+    },
+    [patchRun],
+  );
+
   return (
     <StateCard
       state={state}
@@ -406,9 +458,12 @@ export function ControlPanel(props: ControlPanelProps) {
       onStart={onStart}
       onStop={onStop}
       onRestart={onRestart}
+      onSeek={onSeek}
       errorLine={errorLine}
       busy={busy}
       speedOptions={SPEED_OPTIONS}
+      flight={flight}
+      flightError={flightError}
     />
   );
 }

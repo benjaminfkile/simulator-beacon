@@ -3,7 +3,13 @@
 // non-2xx answer becomes an ApiError whose `code` is the error body's `code`
 // (contracts 0.3) when the body was JSON, otherwise `network_error`.
 
-import type { ApiErrorBody, ControlState, Speed, YearsResponse } from "./types.js";
+import type {
+  ApiErrorBody,
+  ControlState,
+  FlightSeries,
+  Speed,
+  YearsResponse,
+} from "./types.js";
 
 export class ApiError extends Error {
   constructor(
@@ -42,11 +48,13 @@ export interface RunPatch {
   year?: number;
   speed?: Speed;
   loop?: boolean;
+  index?: number;
 }
 
 export interface ApiClient {
   getState(): Promise<ControlState>;
   getYears(): Promise<YearsResponse>;
+  getFlight(year: number): Promise<FlightSeries>;
   start(body: { year: number; speed: Speed }): Promise<ControlState>;
   stop(): Promise<ControlState>;
   restart(): Promise<ControlState>;
@@ -79,6 +87,8 @@ export function createApiClient(opts: ApiClientOptions): ApiClient {
   return {
     getState: () => req<ControlState>("GET", "/control/state"),
     getYears: () => req<YearsResponse>("GET", "/control/years"),
+    getFlight: (year) =>
+      req<FlightSeries>("GET", `/control/flight?year=${encodeURIComponent(String(year))}`),
     start: (body) => req<ControlState>("POST", "/control/start", body),
     stop: () => req<ControlState>("POST", "/control/stop"),
     restart: () => req<ControlState>("POST", "/control/restart"),
