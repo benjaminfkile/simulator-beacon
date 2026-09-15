@@ -459,7 +459,7 @@ No other keys anywhere. The stored object is the canonical re-serialization (1.6
 
 ### 1.5 Images
 
-Every image on the site is a media asset or a library icon resolved through `snapshot.media` and `snapshot.icons` (1.3b). The site never constructs image URLs. Uploaded SVGs (a media-sourced icon, a media asset of kind `svg`) render only through `<img>` elements, never inline. Library icons are different: they ship in the site's own bundle as inline SVG components on one drawing rule (24 px grid, 1.75 px stroke, `currentColor`), so they take the theme's colour; `snapshot.icons` remains the source for the admin panel, the API's validation, and any consumer without the bundle. A library id the bundle does not know falls back to `<img>` from `snapshot.icons`. A reference that resolves to nothing (an id missing from the map) renders nothing and logs once.
+Every image on the site is a media asset or a library icon resolved through `snapshot.media` and `snapshot.icons` (1.3b). The site never constructs image URLs. Uploaded SVGs (a media-sourced icon, a media asset of kind `svg`) render only through `<img>` elements, never inline. Library icons are different: they ship in the site's own bundle as inline SVG components on one drawing rule (24 px grid, 1.5 px stroke and soft tints in `currentColor`, plus fixed red, gold, green, snow, and cocoa fills exposed as `--icon-*` CSS variables with fallbacks), so the strokes take the theme's colour and the fills read the same inline or through `<img>`; `snapshot.icons` remains the source for the admin panel, the API's validation, and any consumer without the bundle. A library id the bundle does not know falls back to `<img>` from `snapshot.icons`. A reference that resolves to nothing (an id missing from the map) renders nothing and logs once.
 
 ### 1.6 Canonical JSON and hashing
 
@@ -700,7 +700,7 @@ Handling, in order:
 4. `event === "location"`: validate and store `data` exactly as `POST /locations` (4.2), same fan-out. `200` with the `POST /locations` response body (`{ "seq", "published", "receivedAt", "serverTime" }`); `400 validation_failed`; `409 no_live_event`.
 5. Any other `event` (including `heartbeat`): `400 validation_failed` (field `event`). Heartbeats travel over HTTP only (4.2).
 
-Unknown fields in the callback body are ignored (0.2). The gateway ignores the response body and looks only at the status; a `2xx` resolves Red-Nose's invoke, and any non-2xx surfaces to Red-Nose as a thrown hub error with no detail, so the bodies in steps 4 and 5 never reach the phone. Red-Nose sends locations over the hub while its socket is up and over HTTP otherwise, and heartbeats over HTTP always (section 9). Rate: at most one location per second, inside the gateway's 10 per second per connection.
+Unknown fields in the callback body are ignored (0.2). The gateway ignores the response body and looks only at the status; a `2xx` resolves Red-Nose's invoke, and any non-2xx surfaces to Red-Nose as a thrown hub error with no detail, so the bodies in steps 4 and 5 never reach the phone. Red-Nose sends locations over the hub while its socket is up and over HTTP otherwise, and heartbeats over HTTP always (section 9). Rate: a beacon sends at most four locations per second over the hub (`REDNOSE_FIX_INTERVAL_MS`, 8.5), inside the gateway's 10 per second per connection, and at most one per second over HTTP (`REDNOSE_HTTP_FALLBACK_INTERVAL_MS`, 9.2).
 
 ### 2.6 Events the API publishes
 
@@ -2055,7 +2055,8 @@ The site fetches `VITE_CDN_BASE_URL + "/live/location.json"` and otherwise only 
 |---|---|
 | `REDNOSE_DEFAULT_API_BASE_URL` | Prefill for manual enrollment; the enrolled value always wins. |
 | `REDNOSE_HEARTBEAT_INTERVAL_MS` | 15000 |
-| `REDNOSE_FIX_INTERVAL_MS` | 1000 |
+| `REDNOSE_FIX_INTERVAL_MS` | 250 (the location request interval and the send loop's tick) |
+| `REDNOSE_HTTP_FALLBACK_INTERVAL_MS` | 1000 (the least time between two HTTP sends while the socket is down) |
 | `REDNOSE_BACKOFF_MS` | `1000,2000,3000,5000` (the last value repeats forever) |
 | `REDNOSE_LOG_RING_BYTES` | 2,000,000 |
 | `REDNOSE_PROD_API_BASE_URL` | The prod API base URL, present in both flavours; replay (9.4) is offered only when the enrolled `apiBaseUrl` differs from it. |
@@ -2120,7 +2121,7 @@ The socket loop registers its `ChannelEvent` handler with the argument type the 
 
 An unannounced loss of channel membership can also arrive as repeated hub rejections while `socketState` stays `connected` (a sweep evicts a stale allow without an envelope reaching the client, a race with the gateway callback, and so on). Three consecutive `hub_rejected` outcomes while `socketState == connected` ask the socket loop to re-join the ingest channel once (the same path as `auth_expired`); if that re-join throws, the socket loop takes its close-or-failure branch (`socketState = reconnecting`, backoff), and the next attempts fall back to HTTP until the socket is `connected` again. The counter resets on any delivered send.
 
-Send loop (runs every `REDNOSE_FIX_INTERVAL_MS` and immediately on a new fix; after a failed send the next attempt waits `backoff[min(attempt, 3)]`, and a fix arriving during the wait replaces `LatestFix` and goes out when the wait ends):
+Send loop (runs every `REDNOSE_FIX_INTERVAL_MS` and immediately on a new fix; after a failed send the next attempt waits `backoff[min(attempt, 3)]`, and a fix arriving during the wait replaces `LatestFix` and goes out when the wait ends). Over the socket every fix goes out as soon as the previous send resolved, so the delivered rate is the provider's rate, up to four per second. Over HTTP a send starts no sooner than `REDNOSE_HTTP_FALLBACK_INTERVAL_MS` after the previous HTTP send started; fixes that arrive inside that window replace `LatestFix` and the newest one goes out when the window ends. The window is the only difference between the two doors:
 
 ```
 if no LatestFix or LatestFix.seqLocal == lastDeliveredSeqLocal: return
@@ -2130,6 +2131,7 @@ if socketState == connected:
   resolved: lastDeliveredSeqLocal = fix.seqLocal; receiptLatencyMs = elapsed; attempt = 0
   rejected: failed send (below); do not fall back (the socket is up)
 else:
+  if less than REDNOSE_HTTP_FALLBACK_INTERVAL_MS since the last HTTP send started: wait the remainder, then decide again from the top
   POST {apiBaseUrl}/locations with X-Beacon-Key                (10 s timeout)
   2xx: lastDeliveredSeqLocal = fix.seqLocal; httpFallbackSeconds accrues; attempt = 0
   otherwise: failed send (below)
