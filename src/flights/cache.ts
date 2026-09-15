@@ -5,12 +5,14 @@
 // locations for the year and a year with no published locations is omitted.
 
 import type { EventItem, FlightsApi, LocationRow } from "./api.js";
+import { buildFlightSeries, type FlightSeries } from "./series.js";
 
 export interface CachedFlight {
   year: number;
   eventId: number;
   name: string;
   points: LocationRow[];
+  series: FlightSeries;
   loadedAt: string;
   loadMs: number;
 }
@@ -20,6 +22,11 @@ export interface FlightsCache {
     Array<{ year: number; eventId: number; name: string; pointCount: number }>
   >;
   loadYear(year: number): Promise<CachedFlight>;
+  // Return the cached entry if present, else load it through the API. Used by
+  // GET /control/flight (avoids a refetch when the year is already cached) and
+  // by the worker's peek path.
+  getOrLoadYear(year: number): Promise<CachedFlight>;
+  getCached(year: number): CachedFlight | undefined;
   refresh(): Promise<void>;
   cachedYears(): number[];
   lastLoad(): { at: string | null; ms: number | null };
@@ -69,6 +76,7 @@ export function createFlightsCache(opts: FlightsCacheOptions): FlightsCache {
       eventId: event.id,
       name: event.name,
       points,
+      series: buildFlightSeries(points),
       loadedAt: new Date(now()).toISOString(),
       loadMs: took,
     };
@@ -148,9 +156,17 @@ export function createFlightsCache(opts: FlightsCacheOptions): FlightsCache {
     return loadPoints(year, match.event);
   }
 
+  async function getOrLoadYear(year: number): Promise<CachedFlight> {
+    const existing = cache.get(year);
+    if (existing) return existing;
+    return loadYear(year);
+  }
+
   return {
     listYears,
     loadYear,
+    getOrLoadYear,
+    getCached: (year) => cache.get(year),
     refresh,
     cachedYears: () => Array.from(cache.keys()).sort((a, b) => b - a),
     lastLoad: () => ({ at: lastLoadAt, ms: lastLoadMs }),

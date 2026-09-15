@@ -179,6 +179,56 @@ export async function buildControlServer(
     }
   });
 
+  app.get("/control/flight", async (req, reply) => {
+    if (!(await requireAdmin(opts.auth, req as ControlRequest, reply))) return reply;
+    const raw = (req.query as { year?: unknown } | null)?.year;
+    const year =
+      typeof raw === "string"
+        ? Number(raw)
+        : typeof raw === "number"
+          ? raw
+          : NaN;
+    if (!Number.isInteger(year)) {
+      return sendJson(
+        reply,
+        400,
+        errBody("validation_failed", "year required as integer", {
+          fields: { year: "must be an integer" },
+        }),
+      );
+    }
+    let flight;
+    try {
+      flight = await opts.cache.getOrLoadYear(year);
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === "unknown_year") {
+        return sendJson(
+          reply,
+          400,
+          errBody("validation_failed", "unknown year", {
+            fields: { year: "not a published event year" },
+          }),
+        );
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      return sendJson(reply, 502, errBody("upstream_unavailable", msg));
+    }
+    const s = flight.series;
+    return sendJson(reply, 200, {
+      year: flight.year,
+      eventId: flight.eventId,
+      name: flight.name,
+      pointCount: s.pointCount,
+      firstRecordedAt: s.firstRecordedAt,
+      lastRecordedAt: s.lastRecordedAt,
+      durationMs: s.durationMs,
+      hasAltitude: s.hasAltitude,
+      speedSource: s.speedSource,
+      points: s.points,
+    });
+  });
+
   app.post("/control/start", async (req, reply) => {
     const principal = await requireAdmin(opts.auth, req as ControlRequest, reply);
     if (!principal) return reply;
@@ -262,6 +312,7 @@ export async function buildControlServer(
       year?: unknown;
       speed?: unknown;
       loop?: unknown;
+      index?: unknown;
     } | null;
     if (!body || typeof body !== "object") {
       return sendJson(reply, 400, errBody("validation_failed", "body required"));
@@ -270,6 +321,8 @@ export async function buildControlServer(
       year?: number;
       speed?: Speed;
       loop?: boolean;
+      seekTo?: number;
+      seekAt?: string;
     } = {};
     const fields: Record<string, string> = {};
     if (body.year !== undefined) {
@@ -311,8 +364,29 @@ export async function buildControlServer(
         patch.loop = body.loop;
       }
     }
+    let indexRequested = false;
+    if (body.index !== undefined) {
+      const idx = body.index;
+      if (typeof idx !== "number" || !Number.isInteger(idx) || idx < 0) {
+        fields.index = "must be an integer >= 0";
+      } else {
+        indexRequested = true;
+        patch.seekTo = idx;
+        patch.seekAt = new Date().toISOString();
+      }
+    }
     if (Object.keys(fields).length > 0) {
       return sendJson(reply, 400, errBody("validation_failed", "invalid body", { fields }));
+    }
+    // An index seek needs a year on the row: the worker peeks (stopped) or
+    // re-arms (running) against a loaded year; a naked seek without a year is
+    // meaningless. Read the row before writing so we can 409 without touching
+    // the seek columns.
+    if (indexRequested) {
+      const current = await opts.db.read();
+      if (current.year == null) {
+        return sendJson(reply, 409, errBody("no_run", "no year to seek in"));
+      }
     }
     // No fields to patch: return the current row without touching it.
     if (Object.keys(patch).length === 0) {

@@ -49,6 +49,8 @@ function makeFakeDb(initial: Partial<SimRun> = {}): Db {
     lastFixAt: null,
     lastError: null,
     requestedBy: null,
+    seekTo: null,
+    seekAt: null,
     leaderState: null,
     leaderAt: null,
     updatedAt: new Date().toISOString(),
@@ -67,29 +69,59 @@ function makeFakeDb(initial: Partial<SimRun> = {}): Db {
       row.leaderState = state;
       row.leaderAt = new Date().toISOString();
     },
+    async clearSeekAndSetIndex(index: number) {
+      if (row.seekTo === index) {
+        row.seekTo = null;
+        row.index = index;
+      }
+    },
+    async dropSeek(index: number) {
+      if (row.seekTo === index) row.seekTo = null;
+    },
     async close() {},
   };
 }
 
 function makeFakeCache(
   years: Array<{ year: number; eventId: number; name: string; pointCount: number }>,
-  opts: { throwOnList?: boolean } = {},
+  opts: {
+    throwOnList?: boolean;
+    throwOnLoad?: boolean;
+    loadError?: Error & { code?: string };
+    flights?: Map<number, import("../src/flights/cache.js").CachedFlight>;
+  } = {},
 ): FlightsCache {
+  const emptyFlight = (year: number) => ({
+    year,
+    eventId: 1,
+    name: "x",
+    points: [],
+    series: {
+      pointCount: 0,
+      firstRecordedAt: "",
+      lastRecordedAt: "",
+      durationMs: 0,
+      hasAltitude: false,
+      speedSource: "recorded" as const,
+      points: [],
+    },
+    loadedAt: new Date().toISOString(),
+    loadMs: 0,
+  });
   return {
     async listYears() {
       if (opts.throwOnList) throw new Error("boom");
       return years;
     },
     async loadYear(year) {
-      return {
-        year,
-        eventId: 1,
-        name: "x",
-        points: [],
-        loadedAt: new Date().toISOString(),
-        loadMs: 0,
-      };
+      if (opts.throwOnLoad) throw opts.loadError ?? new Error("load-boom");
+      return opts.flights?.get(year) ?? emptyFlight(year);
     },
+    async getOrLoadYear(year) {
+      if (opts.throwOnLoad) throw opts.loadError ?? new Error("load-boom");
+      return opts.flights?.get(year) ?? emptyFlight(year);
+    },
+    getCached: (year) => opts.flights?.get(year),
     async refresh() {
       if (opts.throwOnList) throw new Error("boom");
     },
@@ -537,6 +569,64 @@ describe("control API (simulator-beacon.md 5)", () => {
     expect(body.run.index).toBe(12);
     expect(body.run.cycles).toBe(4);
     expect(body.run.nextFixInMs).toBeNull();
+    await server.close();
+  });
+
+  it("PATCH /control/run { index } writes seek_to and seek_at and returns the state body", async () => {
+    const db = makeFakeDb({ status: "running", year: 2025, speed: 20, index: 10, total: 100 });
+    const server = await buildServer(
+      db,
+      makeFakeCache([{ year: 2025, eventId: 1, name: "2025", pointCount: 100 }]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const before = Date.now();
+    const res = await inject(server, "PATCH", "/control/run", token, { index: 55 });
+    expect(res.statusCode).toBe(200);
+    // The state body is returned; the seek row-level fields are internal to
+    // the worker but the row is updated.
+    const row = await db.read();
+    expect(row.seekTo).toBe(55);
+    expect(row.seekAt).not.toBeNull();
+    expect(Date.parse(row.seekAt!)).toBeGreaterThanOrEqual(before);
+    await server.close();
+  });
+
+  it("PATCH /control/run { index } returns 409 no_run when the row has no year", async () => {
+    const db = makeFakeDb({ status: "stopped", year: null });
+    const server = await buildServer(db, makeFakeCache([]));
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "PATCH", "/control/run", token, { index: 5 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("no_run");
+    // The row's seek columns were not touched.
+    const row = await db.read();
+    expect(row.seekTo).toBeNull();
+    await server.close();
+  });
+
+  it("PATCH /control/run rejects a non-integer index with 400 validation_failed", async () => {
+    const db = makeFakeDb({ status: "running", year: 2025, speed: 20 });
+    const server = await buildServer(
+      db,
+      makeFakeCache([{ year: 2025, eventId: 1, name: "2025", pointCount: 1 }]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "PATCH", "/control/run", token, { index: 3.14 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("validation_failed");
+    await server.close();
+  });
+
+  it("PATCH /control/run rejects a negative index with 400 validation_failed", async () => {
+    const db = makeFakeDb({ status: "running", year: 2025, speed: 20 });
+    const server = await buildServer(
+      db,
+      makeFakeCache([{ year: 2025, eventId: 1, name: "2025", pointCount: 1 }]),
+    );
+    const token = await mint(key, { token_use: "id", "cognito:groups": ["admin"] });
+    const res = await inject(server, "PATCH", "/control/run", token, { index: -1 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().code).toBe("validation_failed");
     await server.close();
   });
 

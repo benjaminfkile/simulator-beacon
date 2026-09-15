@@ -308,6 +308,86 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     await persistLeaderState();
   }
 
+  async function handleSeek(row: SimRun): Promise<boolean> {
+    // A seek request the operator dropped on the row (simulator-beacon.md 4).
+    // A drag leaves the latest one standing: the conditional clear only wins
+    // when seek_to is still the value we acted on. Returns true when the
+    // handler owned the tick (skip the cadence-based writes below).
+    if (row.seekTo == null) return false;
+    const seekTo = row.seekTo;
+    if (row.status === "loading" || row.status === "failed") {
+      // No emit and no index write: the request is dropped.
+      try {
+        await opts.db.dropSeek(seekTo);
+      } catch (err) {
+        logError(err, "dropSeek(loading/failed)", { seekTo });
+      }
+      return true;
+    }
+    if (row.status === "running") {
+      // Running with an active scheduler: re-arm at the clamped index. The
+      // scheduler emits the point at once and continues at the run's speed
+      // (simulator-beacon.md 4).
+      if (!active) return false;
+      const idx = Math.max(0, Math.min(seekTo, active.points.length - 1));
+      active.emittedSinceLastPersist = 0;
+      active.scheduler.start(idx);
+      lastPersistedIndex = idx;
+      try {
+        await opts.db.clearSeekAndSetIndex(seekTo);
+      } catch (err) {
+        logError(err, "clearSeekAndSetIndex(running)", { seekTo });
+      }
+      return true;
+    }
+    // Stopped with a year on the row: peek at that point through onEmit and
+    // persist the index; the status stays stopped so Start (B9) resumes from
+    // there.
+    if (row.status === "stopped" && row.year != null) {
+      let flight;
+      try {
+        flight = await opts.cache.getOrLoadYear(row.year);
+      } catch (err) {
+        logError(err, "getOrLoadYear(peek)", { year: row.year, seekTo });
+        try {
+          await opts.db.dropSeek(seekTo);
+        } catch (dbErr) {
+          logError(dbErr, "dropSeek(peek load failure)", { seekTo });
+        }
+        return true;
+      }
+      if (flight.points.length === 0) {
+        try {
+          await opts.db.dropSeek(seekTo);
+        } catch (err) {
+          logError(err, "dropSeek(peek no points)", { seekTo });
+        }
+        return true;
+      }
+      const idx = Math.max(0, Math.min(seekTo, flight.points.length - 1));
+      const point = flight.points[idx]!;
+      try {
+        opts.onEmit({ point, recordedAtNow: isoNow() });
+      } catch (err) {
+        logError(err, "onEmit(peek)", { year: row.year, index: idx });
+      }
+      lastPersistedIndex = idx;
+      try {
+        await opts.db.clearSeekAndSetIndex(seekTo);
+      } catch (err) {
+        logError(err, "clearSeekAndSetIndex(peek)", { seekTo });
+      }
+      return true;
+    }
+    // Any other combination (stopped with no year): drop the seek.
+    try {
+      await opts.db.dropSeek(seekTo);
+    } catch (err) {
+      logError(err, "dropSeek(no year)", { seekTo });
+    }
+    return true;
+  }
+
   function tick(): Promise<void> {
     if (tickInFlight) return tickInFlight;
     tickInFlight = (async () => {
@@ -366,6 +446,12 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
         if (row.cycles !== active.cycles) {
           active.cycles = row.cycles;
         }
+      }
+      // A seek queued on the row (simulator-beacon.md 4): running re-arms the
+      // scheduler; stopped emits one point through onEmit and stays stopped so
+      // Start (B9) resumes from there; loading/failed drop the request.
+      if (row.seekTo != null) {
+        await handleSeek(row);
       }
       // Cadence: write leader_state every `persistEvery` ticks (about once a
       // second at tickMs=250), or immediately after a status change the worker
