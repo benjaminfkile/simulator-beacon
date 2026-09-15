@@ -531,7 +531,7 @@ Apply a live object `L` (from either path):
 Poll timer:
 
 - Quiet is defined only while `live.eventStatusId === 3`: `hub !== "connected"`, or `lastHubLocationAt === null`, or `now - lastHubLocationAt > 2 * live.pollIntervalMs`. Outside status 3 the hub is never quiet.
-- Cadence is `live.pollIntervalMs` when not quiet; `max(1000, live.pollIntervalMs / 2)` when quiet. Tightened polling applies only while live.
+- Cadence is `live.pollIntervalMs` when not quiet; `max(1000, live.pollIntervalMs / 2)` when quiet. Tightened polling applies only while live. Quiet drives the cadence only; what the site shows the visitor about its connection comes from the hub state and the last successful poll (site.md 5.2), never from how often fixes arrive.
 - Each tick fetches `live/location.json` and applies it. The timer is re-armed after each fetch completes (no overlapping fetches). A `403`, `404`, `5xx`, or network failure on a poll keeps the current store and waits for the next tick.
 - When the document is hidden the site keeps the hub connection and stops polling; on becoming visible it polls immediately and resumes.
 
