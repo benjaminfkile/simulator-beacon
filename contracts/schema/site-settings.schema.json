@@ -14,7 +14,8 @@
       "type": "object",
       "properties": {
         "snowDefault": { "type": "boolean" },
-        "lightsDefault": { "type": "boolean" }
+        "lightsDefault": { "type": "boolean" },
+        "ornaments": { "type": "boolean" }
       },
       "required": ["snowDefault", "lightsDefault"],
       "additionalProperties": false

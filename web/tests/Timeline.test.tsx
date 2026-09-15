@@ -126,7 +126,7 @@ describe("Timeline (component)", () => {
       toJSON() { return {}; },
     } as DOMRect);
     fireEvent.pointerDown(svg, { clientX: 200, clientY: 100, pointerId: 1 });
-    // Three moves inside one 200 ms window — the trailing throttle folds them
+    // Three moves inside one 200 ms window, the trailing throttle folds them
     // into one PATCH at the end of the window.
     fireEvent.pointerMove(svg, { clientX: 210, clientY: 100, pointerId: 1 });
     act(() => {
@@ -137,7 +137,7 @@ describe("Timeline (component)", () => {
       vi.advanceTimersByTime(30);
     });
     fireEvent.pointerMove(svg, { clientX: 230, clientY: 100, pointerId: 1 });
-    // No seek yet — we are inside the trailing window.
+    // No seek yet, we are inside the trailing window.
     expect(onSeek).not.toHaveBeenCalled();
     // Let the trailing timer fire (200 ms since it was armed at the first move).
     act(() => {

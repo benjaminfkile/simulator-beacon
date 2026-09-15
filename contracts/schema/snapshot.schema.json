@@ -119,6 +119,27 @@
       },
       "additionalProperties": false
     },
+    "qrCodes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "pageSlug": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "forwardUrl": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "sponsors": {
       "type": "array",
       "items": {

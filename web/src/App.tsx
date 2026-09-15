@@ -356,7 +356,7 @@ export function ControlPanel(props: ControlPanelProps) {
   // The selects and the switch are never disabled: while a run is going, a
   // change sends PATCH /control/run at once and the state line shows it take
   // effect (simulator-beacon.md 5); while stopped the choice is what Start
-  // will use — the PATCH still lands so the row stays in sync.
+  // will use, the PATCH still lands so the row stays in sync.
   const patchRun = useCallback(
     async (body: { year?: number; speed?: Speed; loop?: boolean; index?: number }): Promise<void> => {
       try {

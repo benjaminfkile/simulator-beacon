@@ -123,7 +123,7 @@ export function xToIndex(
 
 // The fastest 10% band: pick the 90th-percentile speed as the threshold, then
 // the earliest and latest indices whose speed lies above it. A single
-// contiguous band per docs — the eye finds "where the fastest points are".
+// contiguous band per docs, the eye finds "where the fastest points are".
 // Returns null when there is no speed to compare.
 export interface FastBand {
   fromIndex: number;

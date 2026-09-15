@@ -167,7 +167,7 @@ Keys appear in this order.
 | `cookieTally` | `object` | never (`{}` when no cookies or no event) | Keys are cookie type ids as decimal strings, emitted in ascending numeric id order; values are `int` counts of cookies on the current event. A type with zero cookies is absent; the site fills zeros from `snapshot.cookieTypes`. |
 | `seq` | `int64 \| null` | the current event has no published location | Arrival sequence of the location fields below, per event, strictly increasing. |
 | `lat`, `lng` | `number \| null` | same as `seq` | Degrees. |
-| `speedMps`, `altitudeM`, `headingDeg`, `accuracyM` | `number \| null` | same as `seq`, or the update carried null | Units per 0.2. |
+| `speedMps`, `altitudeM`, `headingDeg`, `accuracyM` | `number \| null` | same as `seq`, or the update carried null | Units per 0.2. `speedMps` on the live object is the beacon's value when the fix carried one, else the value the API derived from the previous stored fix on the event (haversine distance divided by the seconds between the two `recordedAt` values). |
 | `recordedAt` | `rfc3339 \| null` | same as `seq` | The fix time the beacon sent. Informational; it never decides anything. |
 | `receivedAt` | `rfc3339 \| null` | same as `seq` | When the API stored the update. |
 | `publishedAt` | `rfc3339` | never | When this object was built. Used for the "last update" display and the tie-break below. |
@@ -697,7 +697,7 @@ Handling, in order:
 1. The request carries any `X-Forwarded-*` header: `404`, empty body.
 2. `channel` is not exactly `<WMSFO_SERVICE_NAME>:ingest`: `403 forbidden`. This is what stops a public-channel member from sending anything through `SendToChannel("<service>:location", ...)`; the gateway forwards such sends because the message path is set service-wide. This branch is the first check after step 1 and does no I/O; its only bound is the gateway's 10 messages per second per connection. A gateway feature that forwards `SendToChannel` only for channels joined with a credential is on the gateway backlog; it removes this path entirely when it lands.
 3. Parse `identity` as `<beaconId>:<keyVersion>`. `identity` null or malformed, the beacon unknown, `revoked_at` set, or `key_version` different from the row: `403 forbidden`. Re-checked on every message so a revoked or rotated key stops at the next message, before the gateway's eviction sweep. Stamp `last_seen_at` only when the check passes.
-4. `event === "location"`: validate and store `data` exactly as `POST /locations` (4.2), same fan-out. `200` with the `POST /locations` response body (`{ "seq", "published", "receivedAt", "serverTime" }`); `400 validation_failed`; `409 no_live_event`.
+4. `event === "location"`: validate and store `data` exactly as `POST /locations` (4.2), same fan-out. `200` with the `POST /locations` response body (`{ "seq", "published", "receivedAt", "serverTime", "outcome" }`); `400 validation_failed`; `409 no_live_event`. The rate-limit `dropped` outcome (4.2) is the same body.
 5. Any other `event` (including `heartbeat`): `400 validation_failed` (field `event`). Heartbeats travel over HTTP only (4.2).
 
 Unknown fields in the callback body are ignored (0.2). The gateway ignores the response body and looks only at the status; a `2xx` resolves Red-Nose's invoke, and any non-2xx surfaces to Red-Nose as a thrown hub error with no detail, so the bodies in steps 4 and 5 never reach the phone. Red-Nose sends locations over the hub while its socket is up and over HTTP otherwise, and heartbeats over HTTP always (section 9). Rate: a beacon sends at most four locations per second over the hub (`REDNOSE_FIX_INTERVAL_MS`, 8.5), inside the gateway's 10 per second per connection, and at most one per second over HTTP (`REDNOSE_HTTP_FALLBACK_INTERVAL_MS`, 9.2).
@@ -899,6 +899,8 @@ type Beacon = {
   id: number; name: string; notes: string; keyPrefix: string; isActive: boolean;
   revokedAt: string | null; lastSeenAt: string | null; lastLocationAt: string | null; lastHeartbeatAt: string | null;
   staleSince: string | null; telemetry: Heartbeat | null; hubConnected: boolean | null; healthy: boolean;
+  minIntervalMs: number | null;                 // per-beacon override of location_min_interval_ms; null means the setting
+  fixesStored: number; fixesCarried: number; fixesRateLimited: number;
   createdBy: string; createdAt: string; updatedAt: string;
   audit: AuditStamp | null;
 };
@@ -924,7 +926,7 @@ type Person = { id: number; email: string; createdAt: string; lastSeenAt: string
 type ContactMessage = { id: number; name: string; email: string; body: string; clientIp: string; createdAt: string; audit: AuditStamp | null };
 type Setting = { key: string; value: unknown; updatedBy: string | null; updatedAt: string | null; audit: AuditStamp | null };
 type SnapshotInfo = { version: number; url: string; s3Key: string; builtAt: string };
-type LocationRow = { seq: number; beaconId: number; published: boolean; recordedAt: string; receivedAt: string; lat: number; lng: number; speedMps: number | null; altitudeM: number | null; headingDeg: number | null; accuracyM: number | null };
+type LocationRow = { seq: number; beaconId: number; published: boolean; recordedAt: string; receivedAt: string; lat: number; lng: number; speedMps: number | null; speedSource: "beacon" | "derived" | null; altitudeM: number | null; headingDeg: number | null; accuracyM: number | null };
 type Heartbeat = { /* the body of POST /beacons/heartbeat, section 4.2 */ };
 type Page<T> = { items: T[]; nextCursor: string | null };
 
@@ -1000,15 +1002,15 @@ Errors: `400 validation_failed` (format), `404 enrollment_token_invalid` (unknow
 | `headingDeg` | `number \| null` | optional, 0 to 360 |
 | `accuracyM` | `number \| null` | optional, 0 to 100000 |
 
-Handling: resolve the beacon (`401` if unknown or revoked); run the location transaction (7.2): lock the live event row (none: `409 no_live_event`, nothing stored), `seq = event.next_seq`, insert with `published = beacon.is_active` read in the same transaction, stamp `last_seen_at` and `last_location_at`, read the `snapshot` row, commit. Respond. Then, if `published`, update memory and write the live object (1.8).
+Handling: resolve the beacon (`401` if unknown or revoked); apply the per-beacon min-interval rate limit and the min-distance / max-gap decision in the location transaction (7.2). The response is the `outcome`: `stored` (a `location` row was written), `carried` (no row; `seq` advanced anyway and the live object is written from the incoming fields), or `dropped` (the fix arrived inside the beacon's effective min interval on this node; no transaction, no live object, no publish; `seq` is the last seq this node accepted from that beacon or 0). The `location_min_interval_ms` filter is per node: a beacon's socket is pinned to one node and HTTP may spread across the fleet, so the fleet-wide bound is at most `<nodes>` times the setting; the gateway's 10 per second per connection stays the outer bound on the hub. The per-endpoint rate limit table row for `POST /locations` notes the per-beacon interval (10 per second, minus the drops for the interval).
 
 `201`:
 
 ```json
-{ "seq": 1832, "published": true, "receivedAt": "...", "serverTime": "..." }
+{ "seq": 1832, "published": true, "receivedAt": "...", "serverTime": "...", "outcome": "stored" }
 ```
 
-Errors: `400 validation_failed`, `401 unauthenticated`, `409 no_live_event`, `429 rate_limited`. Idempotency: none. A retry after a lost response creates a second row with a higher `seq`; harmless.
+Errors: `400 validation_failed`, `401 unauthenticated`, `409 no_live_event`, `429 rate_limited`. Idempotency: none. A retry after a lost response creates a second row with a higher `seq`; harmless. Beacons ignore the `outcome` key.
 
 **`POST /beacons/heartbeat`**. `X-Beacon-Key`. HTTP only, every 15 s, whether or not the socket is up; its answer is the only source of `liveEventId`, `isActive`, and the clock skew on the beacon.
 
@@ -1097,7 +1099,9 @@ Each group of endpoints names its policy (3.1): **Editor** admits both groups, *
 | `POST /admin/events/{id}/messages` **[snapshot]** | `{ "body": "...", "eventTime": null, "notify": true }` (`body` 1 to 1000; `notify` required) | `201 EventMessage`; writes outbox `event.message_posted` only when `notify` is true | |
 | `PATCH /admin/events/{id}/messages/{messageId}` **[snapshot]** | `body`, `eventTime` | `200 EventMessage` (no outbox row) | `404` |
 | `DELETE /admin/events/{id}/messages/{messageId}` **[snapshot]** | | `204` | `404` |
-| `GET /admin/events/{id}/locations?cursor=&limit=&beaconId=&publishedOnly=false` | | `200 Page<LocationRow>` ordered `seq` asc; with `Accept: text/csv` streams every matching row (paging ignored) with the header `seq,beaconId,published,recordedAt,receivedAt,lat,lng,speedMps,altitudeM,headingDeg,accuracyM` | |
+| `GET /admin/events/{id}/locations?cursor=&limit=&beaconId=&publishedOnly=false` | | `200 Page<LocationRow>` ordered `seq` asc; with `Accept: text/csv` streams every matching row (paging ignored) with the header `seq,beaconId,published,recordedAt,receivedAt,lat,lng,speedMps,speedSource,altitudeM,headingDeg,accuracyM` | |
+| `DELETE /admin/events/{id}/locations?beaconId=` | | `204`; deletes the event's location rows, one beacon's when `beaconId` is given; `next_seq` is not reset; the audit action is `event.locations_cleared` with `before = { count, byBeacon: [ { beaconId, name, count } ] }`. The leader's next tick rewrites the live object from SQL, so the site sees the marker update in due course (contracts 1.2 lets a site keep the location it holds until reload; fine). | `404`, `409 event_live` |
+| `GET /admin/events/{id}/locations/impact` | | `200 DeleteImpact` (api.md 5b): one group `locations` per beacon with the count and the beacon's name; blocked with `This event is live. End it first.` while live | `404` |
 
 Status change transaction: lock the event row; check the rules above; for `statusId` 3 also read the active beacon (`is_active`) and refuse with `409 no_healthy_beacon` unless it exists, has `revoked_at` null, `stale_since` null, and `last_seen_at` not null (a healthy beacon is one the API has heard from within `beacon_stale_after_s`; the socket is not required, HTTP heartbeats count); update `status_id`; stamp `went_live_at = now()` on every entry into 3 and `ended_at = now()` on every entry into 4 (earlier stamps are overwritten; the admin can correct either with `PATCH`); on every entry into 4 also set `final_cookie_tally` to the current counts (`jsonb_object_agg` per type) and on every exit from 4 set it to null; insert `event_status_history`; insert outbox `event.status_changed { eventId, fromStatusId, toStatusId, notify }`; rebuild the snapshot; commit. After commit the node writes the live object with the new `eventStatusId` and `snapshotUrl` and publishes it. Any status may follow any other status; the admin decides, and `notify` decides whether subscribers are emailed (only entries into 2 and 3 produce emails, section 7.7).
 
@@ -1122,7 +1126,7 @@ Attaching a route to an event is `PATCH /admin/events/{id}` with `routeId`.
 | `GET /admin/beacons` | | `200 { "items": Beacon[], "staleAfterS": 45 }` by name (telemetry included; `staleAfterS` is the current `beacon_stale_after_s`; `hubConnected` is true when the gateway's presence list for `<service>:ingest` (its `members[].identity`) contains `<id>:<keyVersion>` for the beacon, false when it does not, null when the presence call failed; `healthy` is `revokedAt` null and `staleSince` null and `lastSeenAt` not null) | |
 | `GET /admin/beacons/{id}` | | `200 Beacon` (`hubConnected` resolved the same way) | |
 | `POST /admin/beacons` | `{ "name": "...", "notes": "" }` (`name` 1 to 100, `notes` 0 to 2000) | `201 { "beacon": Beacon, "key": "wbk_...", "enrollment": Enrollment }` | `400` |
-| `PATCH /admin/beacons/{id}` | `name`, `notes` | `200 Beacon` | `404` |
+| `PATCH /admin/beacons/{id}` | `name`, `notes`, `minIntervalMs` (int 0 to 60000 or null to clear the override) | `200 Beacon` | `404` |
 | `POST /admin/beacons/{id}/activate` | none | `200 Beacon` | `409 beacon_revoked` |
 | `POST /admin/beacons/{id}/deactivate` | none | `200 Beacon` | |
 | `POST /admin/beacons/{id}/rotate` | none | `200 { "beacon": Beacon, "key": "wbk_...", "enrollment": Enrollment }` | `409 beacon_revoked` |
@@ -1464,22 +1468,26 @@ create table event_message (
 create index event_message_event_created on event_message (event_id, created_at desc);
 
 create table beacon (
-  id                bigint generated always as identity primary key,
-  name              text not null,
-  notes             text not null default '',
-  key_hash          bytea not null unique,
-  key_prefix        text not null,
-  key_version       integer not null default 1,   -- incremented by rotate; carried in the hub identity (2.4)
-  is_active         boolean not null default false,
-  revoked_at        timestamptz,
-  last_seen_at      timestamptz,
-  last_location_at  timestamptz,
-  last_heartbeat_at timestamptz,
-  stale_since       timestamptz,
-  telemetry         jsonb,
-  created_by        text not null,
-  created_at        timestamptz not null default now(),
-  updated_at        timestamptz not null default now()
+  id                 bigint generated always as identity primary key,
+  name               text not null,
+  notes              text not null default '',
+  key_hash           bytea not null unique,
+  key_prefix         text not null,
+  key_version        integer not null default 1,   -- incremented by rotate; carried in the hub identity (2.4)
+  is_active          boolean not null default false,
+  revoked_at         timestamptz,
+  last_seen_at       timestamptz,
+  last_location_at   timestamptz,
+  last_heartbeat_at  timestamptz,
+  stale_since        timestamptz,
+  telemetry          jsonb,
+  min_interval_ms    integer,                        -- overrides location_min_interval_ms; null means the setting (contracts 4.2, 7.2)
+  fixes_stored       bigint not null default 0,
+  fixes_carried      bigint not null default 0,
+  fixes_rate_limited bigint not null default 0,
+  created_by         text not null,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
 );
 create unique index beacon_one_active on beacon (is_active) where is_active;
 
@@ -1504,22 +1512,24 @@ create table beacon_log (
 create index beacon_log_beacon on beacon_log (beacon_id, received_at desc);
 
 create table location (
-  id          bigint generated always as identity primary key,
-  event_id    bigint not null references event (id),
-  beacon_id   bigint not null references beacon (id),
-  seq         bigint not null,
-  recorded_at timestamptz not null,
-  received_at timestamptz not null default now(),
-  lat         double precision not null,
-  lng         double precision not null,
-  speed_mps   double precision,
-  altitude_m  double precision,
-  heading_deg double precision,
-  accuracy_m  double precision,
-  published   boolean not null,
+  id           bigint generated always as identity primary key,
+  event_id     bigint not null references event (id),
+  beacon_id    bigint not null references beacon (id),
+  seq          bigint not null,
+  recorded_at  timestamptz not null,
+  received_at  timestamptz not null default now(),
+  lat          double precision not null,
+  lng          double precision not null,
+  speed_mps    double precision,
+  speed_source text,                          -- 'beacon' when the body carried speedMps, 'derived' when the API computed it, null otherwise (contracts 7.2)
+  altitude_m   double precision,
+  heading_deg  double precision,
+  accuracy_m   double precision,
+  published    boolean not null,
   unique (event_id, seq)
 );
 create index location_event_published_seq on location (event_id, seq desc) where published;
+create index location_event_beacon_seq    on location (event_id, beacon_id, seq desc);
 
 create table media_asset (
   id                 uuid primary key,
@@ -1861,6 +1871,9 @@ Plain `lat`/`lng` columns; no PostGIS. `seq` is per event from `event.next_seq`,
 | `sponsor_linger_min_ms` | int | 2000 | 0 to 600000 | Admin panel | Snapshot `sponsors[].lingerMs` |
 | `beacon_stale_after_s` | int | 45 | 15 to 3600 | Admin panel | Stale-beacon chore (7.6); returned as `staleAfterS` on `GET /admin/beacons` for panel colouring (1.11) |
 | `flight_history_max_points` | int | 2000 | 100 to 50000 | Admin panel | Snapshot `event.flightHistory.points` thinning (1.3): a 7,200-point flight at 2,000 keeps every 4th point, about 110 KB in the snapshot |
+| `location_min_interval_ms` | int | 250 | 0 to 60000 | Admin panel | Location write path (7.2): the least time between two accepted fixes from one beacon on a node; 0 disables |
+| `location_min_distance_m` | number | 0 | 0 to 10000 | Admin panel | Location write path (7.2): a fix that moved less than this from the beacon's last stored fix on the event is carried, not stored; 0 means only an exact repeat of `lat` and `lng` is carried |
+| `location_max_gap_s` | int | 30 | 1 to 3600 | Admin panel | Location write path (7.2): a fix is stored regardless of distance once this long has passed since the beacon's last stored fix on the event |
 
 Only `PUT /admin/settings/{key}` changes a value. A missing row means the default. Every settings write is a snapshot-affecting write: the version bump makes every node re-read settings within a tick, and the writing node rewrites the live object so a new `poll_interval_ms` reaches the site. No other configuration lives in the database.
 
@@ -1874,20 +1887,44 @@ Only `PUT /admin/settings/{key}` changes a value. A missing row means the defaul
 
 ### 7.2 Location write (either door)
 
+Before the transaction (per-node, in memory): the node keeps `lastAcceptedAt` per beacon id. Let `effective = beacon.min_interval_ms when set else location_min_interval_ms`. When `now - lastAcceptedAt < effective` the fix is dropped: no transaction, no live object, no publish; the node increments a per-beacon drop counter and flushes those counts into `beacon.fixes_rate_limited` at most once every 5 s per beacon (one update per beacon with drops). The dropped response is `201 { seq, published, receivedAt, serverTime, outcome: "dropped" }` where `seq` is the last seq this node accepted from that beacon (or 0), `published` is the beacon's flag from the auth lookup, `receivedAt` is now. The `LocationPublished` metric filter keys on outcome `stored` (api.md 16).
+
 ```
 begin;
-select id, status_id, next_seq from event where status_id = 3 for update;   -- none: rollback, 409 no_live_event
-select is_active, revoked_at from beacon where id = $beacon;               -- revoked: rollback, 401 (REST) or 403 (message path)
+select id, status_id, next_seq from event where status_id = 3 for update;                    -- none: rollback, 409 no_live_event
+select is_active, revoked_at, key_version, min_interval_ms from beacon where id = $beacon;   -- revoked or stale key_version: rollback, 401 or 403
+select seq, lat, lng, recorded_at, received_at from location
+  where event_id = $event and beacon_id = $beacon order by seq desc limit 1;                 -- the previous stored fix, or none
+-- store when: no previous fix; or the haversine distance from it is at least location_min_distance_m
+-- (with 0 meaning lat or lng differs at all); or now - its received_at is at least location_max_gap_s.
+-- otherwise carry.
+--
+-- stored:
 insert into location (event_id, beacon_id, seq, recorded_at, received_at, lat, lng,
-                      speed_mps, altitude_m, heading_deg, accuracy_m, published)
-  values ($event, $beacon, $next_seq, $recordedAt, now(), ..., $is_active);
+                      speed_mps, speed_source, altitude_m, heading_deg, accuracy_m, published)
+  values ($event, $beacon, $next_seq, $recordedAt, now(), ...,
+          coalesce($body_speed_mps, $derived_speed_mps),
+          case when $body_speed_mps is not null then 'beacon'
+               when $derived_speed_mps is not null then 'derived'
+               else null end,
+          ...,
+          $is_active);
 update event  set next_seq = next_seq + 1 where id = $event;
-update beacon set last_seen_at = now(), last_location_at = now(), stale_since = null where id = $beacon;
+update beacon set last_seen_at = now(), last_location_at = now(), stale_since = null,
+                  fixes_stored = fixes_stored + 1 where id = $beacon;
+--
+-- carried (no row):
+update event  set next_seq = next_seq + 1 where id = $event;               -- next_seq still advances; that seq goes to the live object
+update beacon set last_seen_at = now(), stale_since = null,
+                  fixes_carried = fixes_carried + 1 where id = $beacon;   -- last_location_at untouched
+--
 select version, url from snapshot where id = 1;                            -- carried into the live object
 commit;
 ```
 
-Then respond to the beacon. Then, when `published` is true: update memory (location, snapshot version and URL, event status), build the live object with the tally from memory, PUT `live/location.json`, publish `location` (2.6), set `wroteForLocationSinceVersionChange = true`, update `live_state` (1.8). The publish is attempted whether or not the PUT succeeded. The PUT and publish are not awaited by the beacon's response. A CDN write failure is logged and the response was already `2xx` (the row is stored; the next update retries the object; the hub carried the point). When `published` is false nothing outside the transaction happens.
+Derived speed is the haversine distance from the previous stored fix divided by the seconds between the two `recordedAt` values; null when there is no previous fix or the delta is not positive. `speed_source` is `'beacon'` when the body carried `speedMps`, `'derived'` when the API computed it, else null.
+
+Then respond to the beacon with `{ seq, published, receivedAt, serverTime, outcome }` where `outcome` is `stored` or `carried`. Update in-memory `lastAcceptedAt`. Then, when `published` is true: update memory (location, snapshot version and URL, event status), build the live object with the tally from memory from the incoming fix's fields (with the new `seq` and `receivedAt = now`, so every apply rule and the signal-lost rule stay as they are), PUT `live/location.json`, publish `location` (2.6), set `wroteForLocationSinceVersionChange = true`, update `live_state` (1.8). Carried fixes publish the same way as stored ones: the site sees a rising `seq` and its store advances. The publish is attempted whether or not the PUT succeeded. The PUT and publish are not awaited by the beacon's response. A CDN write failure is logged and the response was already `2xx` (the row is stored or the fix was carried; the next update retries the object; the hub carried the point). When `published` is false nothing outside the transaction happens.
 
 ### 7.3 Snapshot-affecting transaction
 
@@ -2340,6 +2377,8 @@ Tests the artifacts drive: Vitest on the site store, page selection, section reg
 - Poster tiles are lossless PNG at the poster's own pixels and the viewer never zooms past 1:1; earlier JPEG pyramids stay valid through their descriptor.
 - Printed QR codes are permanent numbered tags at `/q/<tag>`, printed in batches at any size; places are a tree with a note and an optional pin; an attachment is the history; scans count against the code and roll up the tree; the snapshot carries every active code resolved so the site never asks the API what to open; the only public write is the scan beacon, always `204`.
 - A third admin-pool group, `canvasser`, reaches exactly the QR and places routes; deletes stay admin.
+- The location ingest filter is the API's, and beacons stay blind to it: `location_min_interval_ms` and `beacon.min_interval_ms` gate a per-beacon rate limit in memory on the node (dropped fixes get `outcome: "dropped"` and update no row); `location_min_distance_m` and `location_max_gap_s` decide inside the transaction whether the row is stored or carried. A carried fix still advances `event.next_seq` and moves the live object (contracts 1.2), so the site needs no change; the `LocationRow` and CSV gain `speedSource` (`beacon`, `derived`, or null) and `speedMps` on the live object is the beacon's value when present or the API-derived one.
+- Clearing a recording is `DELETE /admin/events/{id}/locations?beaconId=`: 204 on success, 409 while the event is live; `next_seq` is not reset; the audit action is `event.locations_cleared` and the site keeps whatever it holds until the leader's next tick rewrites the live object.
 
 ## 15. Needs a decision
 

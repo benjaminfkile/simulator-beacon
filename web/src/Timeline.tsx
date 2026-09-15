@@ -510,11 +510,11 @@ export function Timeline(props: TimelineProps) {
             </span>
             <span data-testid="readout-mph">
               {activeReadout.mph == null
-                ? "— mph"
+                ? "no speed"
                 : `${activeReadout.mph.toFixed(1)} mph`}
             </span>
             <span data-testid="readout-ft">
-              {activeReadout.ft == null ? "— ft" : `${Math.round(activeReadout.ft)} ft`}
+              {activeReadout.ft == null ? "no altitude" : `${Math.round(activeReadout.ft)} ft`}
             </span>
             <span data-testid="readout-index">
               point {activeReadout.index + 1} of {totalPoints}

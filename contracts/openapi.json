@@ -354,6 +354,25 @@
         }
       }
     },
+    "/me/alerts": {
+      "get": {
+        "tags": [
+          "Me"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemsResponseOfAlertItemDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/me/cookies": {
       "get": {
         "tags": [
@@ -552,6 +571,64 @@
         }
       }
     },
+    "/admin/events/{id}/notify": {
+      "post": {
+        "tags": [
+          "AdminEvents"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotifyStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/events/{id}/clone": {
+      "post": {
+        "tags": [
+          "AdminEvents"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloneEventRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/events/{id}/status-history": {
       "get": {
         "tags": [
@@ -668,6 +745,35 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PageResponseOfLocationRowDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "AdminEvents"
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
+    "/admin/events/{id}/locations/impact": {
+      "get": {
+        "tags": [
+          "AdminEvents"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
                 }
               }
             }
@@ -1122,6 +1228,54 @@
         "responses": {
           "204": {
             "description": "No Content"
+          }
+        }
+      }
+    },
+    "/admin/sponsors/{id}/years/{eventYear}/copy-from/{sourceYear}": {
+      "post": {
+        "tags": [
+          "AdminSponsors"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SponsorYearDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/sponsors/import": {
+      "post": {
+        "tags": [
+          "AdminSponsors"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SponsorImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SponsorImportResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -2224,6 +2378,44 @@
         }
       }
     },
+    "/admin/audit": {
+      "get": {
+        "tags": [
+          "AdminAudit"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PageResponseOfAuditEntryDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/audit/entities": {
+      "get": {
+        "tags": [
+          "AdminAudit"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemsResponseOfstring"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/realtime/authorize": {
       "post": {
         "tags": [
@@ -2275,6 +2467,575 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LocationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/qr-codes": {
+      "get": {
+        "tags": [
+          "AdminQrCodes"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemsResponseOfQrCodeDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "AdminQrCodes"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MintQrCodesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemsResponseOfQrCodeDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/qr-codes/{id}": {
+      "get": {
+        "tags": [
+          "AdminQrCodes"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QrCodeDetailDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "AdminQrCodes"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchQrCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QrCodeDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "AdminQrCodes"
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
+    "/admin/qr-codes/{id}/attach": {
+      "post": {
+        "tags": [
+          "AdminQrCodes"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachQrCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QrCodeDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/qr-codes/{id}/detach": {
+      "post": {
+        "tags": [
+          "AdminQrCodes"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QrCodeDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/places": {
+      "get": {
+        "tags": [
+          "AdminPlaces"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ItemsResponseOfPlaceDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "AdminPlaces"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePlaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaceDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/places/{id}": {
+      "patch": {
+        "tags": [
+          "AdminPlaces"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchPlaceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaceDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "AdminPlaces"
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
+    "/admin/places/{id}/location": {
+      "put": {
+        "tags": [
+          "AdminPlaces"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutPlaceLocationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaceDto"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "AdminPlaces"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaceDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/places/map": {
+      "get": {
+        "tags": [
+          "AdminPlaces"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlacePinsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/qr-codes/{tag}/scans": {
+      "post": {
+        "tags": [
+          "Public"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QrScanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        }
+      }
+    },
+    "/admin/events/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/routes/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/sponsors/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/cookie-types/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/pages/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/media/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/places/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/qr-codes/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/beacons/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/api-keys/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/subscribers/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/people/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/contact-messages/{id}/impact": {
+      "get": {
+        "tags": [
+          "AdminImpact"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteImpactDto"
                 }
               }
             }
@@ -2437,6 +3198,69 @@
           }
         }
       },
+      "AlertItemDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "subscriptionId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "address": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "eventId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "eventName": {
+            "type": "string"
+          },
+          "statusId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "messageId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "sentAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
       "ApiKeyDto": {
         "type": "object",
         "properties": {
@@ -2490,6 +3314,16 @@
               "string"
             ],
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -2547,8 +3381,101 @@
             ],
             "format": "date-time"
           },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
+          },
           "key": {
             "type": "string"
+          }
+        }
+      },
+      "AttachQrCodeRequest": {
+        "type": "object",
+        "properties": {
+          "placeId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "AuditEntryDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "entity": {
+            "type": "string"
+          },
+          "entityId": {
+            "type": "string"
+          },
+          "before": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/JsonElement"
+              }
+            ]
+          },
+          "after": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/JsonElement"
+              }
+            ]
+          },
+          "requestId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "AuditStampDto": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -2629,6 +3556,39 @@
           "healthy": {
             "type": "boolean"
           },
+          "minIntervalMs": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "fixesStored": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "fixesCarried": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "fixesRateLimited": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
           "createdBy": {
             "type": "string"
           },
@@ -2639,6 +3599,16 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -2789,6 +3759,52 @@
           },
           "notify": {
             "type": "boolean"
+          },
+          "message": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "CloneEventCopy": {
+        "type": "object",
+        "properties": {
+          "sponsors": {
+            "type": "boolean"
+          },
+          "route": {
+            "type": "boolean"
+          },
+          "poster": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CloneEventRequest": {
+        "type": "object",
+        "properties": {
+          "year": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "name": {
+            "type": "string"
+          },
+          "copy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CloneEventCopy"
+              }
+            ]
           }
         }
       },
@@ -2818,6 +3834,16 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -2996,6 +4022,16 @@
               "string"
             ],
             "format": "int32"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -3095,6 +4131,16 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -3312,6 +4358,41 @@
           }
         }
       },
+      "CreatePlaceRequest": {
+        "type": "object",
+        "properties": {
+          "parentId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "opensPageId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "forwardUrl": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
       "CreateSectionItemRequest": {
         "type": "object",
         "properties": {
@@ -3434,6 +4515,35 @@
           }
         }
       },
+      "DeleteImpactDto": {
+        "type": "object",
+        "properties": {
+          "blocked": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deletes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImpactGroupDto"
+            }
+          },
+          "unlinks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImpactGroupDto"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "EnrollmentDto": {
         "type": "object",
         "properties": {
@@ -3546,6 +4656,13 @@
             ],
             "format": "date-time"
           },
+          "statusNotifiedAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
           "fundsPercent": {
             "pattern": "^-?(?:0|[1-9]\\d*)$",
             "type": [
@@ -3595,6 +4712,16 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -3637,6 +4764,16 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -3764,6 +4901,28 @@
           }
         }
       },
+      "ImpactGroupDto": {
+        "type": "object",
+        "properties": {
+          "entity": {
+            "type": "string"
+          },
+          "count": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "ItemOrderRequest": {
         "type": "object",
         "properties": {
@@ -3776,6 +4935,17 @@
                 "string"
               ],
               "format": "int64"
+            }
+          }
+        }
+      },
+      "ItemsResponseOfAlertItemDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AlertItemDto"
             }
           }
         }
@@ -3879,6 +5049,28 @@
           }
         }
       },
+      "ItemsResponseOfPlaceDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlaceDto"
+            }
+          }
+        }
+      },
+      "ItemsResponseOfQrCodeDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QrCodeDto"
+            }
+          }
+        }
+      },
       "ItemsResponseOfRouteDto": {
         "type": "object",
         "properties": {
@@ -3930,6 +5122,17 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/StatusHistoryDto"
+            }
+          }
+        }
+      },
+      "ItemsResponseOfstring": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }
@@ -4217,6 +5420,9 @@
           "serverTime": {
             "type": "string",
             "format": "date-time"
+          },
+          "outcome": {
+            "type": "string"
           }
         }
       },
@@ -4274,6 +5480,12 @@
               "string"
             ],
             "format": "double"
+          },
+          "speedSource": {
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "altitudeM": {
             "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
@@ -4403,6 +5615,16 @@
               "string"
             ],
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -4588,6 +5810,19 @@
           }
         }
       },
+      "MintQrCodesRequest": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
       "MoveSectionRequest": {
         "type": "object",
         "properties": {
@@ -4712,6 +5947,22 @@
             ],
             "format": "int64"
           },
+          "locationsCarried": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "locationsRateLimited": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
           "livePutsOk": {
             "pattern": "^-?(?:0|[1-9]\\d*)$",
             "type": [
@@ -4802,6 +6053,46 @@
           }
         }
       },
+      "NotifyStatusRequest": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "OpensDto": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "pageId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "slug": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "url": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
       "PageAdminDto": {
         "type": "object",
         "properties": {
@@ -4868,6 +6159,16 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -4959,6 +6260,23 @@
               ],
               "format": "int64"
             }
+          }
+        }
+      },
+      "PageResponseOfAuditEntryDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntryDto"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         }
       },
@@ -5061,6 +6379,9 @@
               "null",
               "string"
             ]
+          },
+          "minIntervalMs": {
+            "$ref": "#/components/schemas/JsonElement"
           }
         }
       },
@@ -5221,6 +6542,94 @@
           }
         }
       },
+      "PatchPlaceRequest": {
+        "type": "object",
+        "properties": {
+          "parentId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "hasParentId": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "description": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "opensPageId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "hasOpensPageId": {
+            "type": "boolean"
+          },
+          "forwardUrl": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "hasForwardUrl": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PatchQrCodeRequest": {
+        "type": "object",
+        "properties": {
+          "opensPageId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "hasOpensPageId": {
+            "type": "boolean"
+          },
+          "forwardUrl": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "hasForwardUrl": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "active": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          }
+        }
+      },
       "PatchSectionItemRequest": {
         "type": "object",
         "properties": {
@@ -5353,6 +6762,16 @@
           "lastSeenAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -5379,6 +6798,317 @@
             "format": "date-time"
           },
           "cookieCount": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
+          }
+        }
+      },
+      "PlaceCodeRefDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "tag": {
+            "type": "string"
+          }
+        }
+      },
+      "PlaceDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "parentId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "opensPageId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "forwardUrl": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "opens": {
+            "$ref": "#/components/schemas/OpensDto"
+          },
+          "opensSource": {
+            "type": "string"
+          },
+          "location": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlaceLocationDto"
+              }
+            ]
+          },
+          "pin": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlacePinResolvedDto"
+              }
+            ]
+          },
+          "codes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlaceCodeRefDto"
+            }
+          },
+          "scans": {
+            "$ref": "#/components/schemas/PlaceScansDto"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
+          }
+        }
+      },
+      "PlaceLocationDto": {
+        "type": "object",
+        "properties": {
+          "lat": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "lng": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "accuracyM": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "source": {
+            "type": "string"
+          },
+          "pinnedBy": {
+            "type": "string"
+          },
+          "pinnedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "PlacePinCodeRefDto": {
+        "type": "object",
+        "properties": {
+          "tag": {
+            "type": "string"
+          },
+          "placeName": {
+            "type": "string"
+          },
+          "people": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "PlacePinDto": {
+        "type": "object",
+        "properties": {
+          "placeId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lat": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "lng": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "people": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "codes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlacePinCodeRefDto"
+            }
+          }
+        }
+      },
+      "PlacePinResolvedDto": {
+        "type": "object",
+        "properties": {
+          "lat": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "lng": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "fromPlaceId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "PlacePinsResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlacePinDto"
+            }
+          },
+          "unpinned": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "unattached": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "PlaceScansDto": {
+        "type": "object",
+        "properties": {
+          "people": {
             "pattern": "^-?(?:0|[1-9]\\d*)$",
             "type": [
               "integer",
@@ -5443,6 +7173,16 @@
           "expiresAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -5503,6 +7243,370 @@
               "null",
               "string"
             ]
+          }
+        }
+      },
+      "PutPlaceLocationRequest": {
+        "type": "object",
+        "properties": {
+          "lat": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "lng": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "accuracyM": {
+            "pattern": "^-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?$",
+            "type": [
+              "null",
+              "number",
+              "string"
+            ],
+            "format": "double"
+          },
+          "source": {
+            "type": "string"
+          }
+        }
+      },
+      "QrAttachmentSummaryDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "placeId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "placePath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "QrCodeDetailDto": {
+        "type": "object",
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QrHistoryEntryDto"
+            }
+          },
+          "daily": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QrDailyDto"
+            }
+          },
+          "id": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "batchNo": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "printedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          },
+          "opensPageId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "forwardUrl": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "opens": {
+            "$ref": "#/components/schemas/OpensDto"
+          },
+          "opensSource": {
+            "type": "string"
+          },
+          "attachment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QrAttachmentSummaryDto"
+              }
+            ]
+          },
+          "scans": {
+            "$ref": "#/components/schemas/QrScanSummaryDto"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
+          }
+        }
+      },
+      "QrCodeDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "batchNo": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "printedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "note": {
+            "type": "string"
+          },
+          "opensPageId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "forwardUrl": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "opens": {
+            "$ref": "#/components/schemas/OpensDto"
+          },
+          "opensSource": {
+            "type": "string"
+          },
+          "attachment": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QrAttachmentSummaryDto"
+              }
+            ]
+          },
+          "scans": {
+            "$ref": "#/components/schemas/QrScanSummaryDto"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
+          }
+        }
+      },
+      "QrDailyDto": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "string"
+          },
+          "people": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "QrHistoryEntryDto": {
+        "type": "object",
+        "properties": {
+          "attachmentId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "placeId": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int64"
+          },
+          "placePath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fromAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "toAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
+          "people": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "earlyScans": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "QrScanRequest": {
+        "type": "object",
+        "properties": {
+          "referrer": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "QrScanSummaryDto": {
+        "type": "object",
+        "properties": {
+          "people": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "flagged": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "lastScanAt": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
           }
         }
       },
@@ -5597,6 +7701,16 @@
           "createdAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -5693,6 +7807,16 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -5741,6 +7865,16 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -5781,6 +7915,16 @@
               "string"
             ],
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -5935,6 +8079,69 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
+          }
+        }
+      },
+      "SponsorImportRequest": {
+        "type": "object",
+        "properties": {
+          "fromYear": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "toYear": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "sponsorIds": {
+            "type": "array",
+            "items": {
+              "pattern": "^-?(?:0|[1-9]\\d*)$",
+              "type": [
+                "integer",
+                "string"
+              ],
+              "format": "int64"
+            }
+          }
+        }
+      },
+      "SponsorImportResponse": {
+        "type": "object",
+        "properties": {
+          "created": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "skipped": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },
@@ -6099,6 +8306,23 @@
           "changedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "notify": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "sentCount": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },
@@ -6147,6 +8371,16 @@
           },
           "personEmail": {
             "type": "string"
+          },
+          "audit": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuditStampDto"
+              }
+            ]
           }
         }
       },
@@ -6372,7 +8606,19 @@
       "name": "AdminApiKeys"
     },
     {
+      "name": "AdminAudit"
+    },
+    {
       "name": "Realtime"
+    },
+    {
+      "name": "AdminQrCodes"
+    },
+    {
+      "name": "AdminPlaces"
+    },
+    {
+      "name": "AdminImpact"
     },
     {
       "name": "AdminDiagnostics"
