@@ -115,8 +115,22 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
       }
       current = client;
       let deniedNext = false;
+      let closed = false;
+      let signalClosed: () => void = () => {};
+      const closeSignal = new Promise<void>((resolve) => {
+        signalClosed = resolve;
+      });
+      const closeRejection = closeSignal.then(() => {
+        throw new Error("hub connection closed");
+      });
+      // A rejection with no listener would surface as an unhandled promise
+      // when start()/invoke settle before the race sees the close arm.
+      closeRejection.catch(() => {});
       client.onClose(() => {
+        closed = true;
         if (state.socketState === "connected") state.socketState = "reconnecting";
+        if (current === client) void stopCurrent();
+        signalClosed();
       });
       client.on(CHANNEL_EVENT, (envelope: unknown) => {
         if (current !== client) return;
@@ -146,12 +160,15 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
         }
       });
       try {
-        await client.start();
-        await client.invoke("JoinPrivateChannel", opts.ingestChannel, opts.key);
+        await Promise.race([client.start(), closeRejection]);
+        await Promise.race([
+          client.invoke("JoinPrivateChannel", opts.ingestChannel, opts.key),
+          closeRejection,
+        ]);
         attempt = 0;
         markConnected();
-        while (!stopped && current === client) {
-          await sleep(1000);
+        while (!stopped && current === client && !closed) {
+          await Promise.race([sleep(1000), closeSignal]);
         }
       } catch (err) {
         deniedNext = isJoinDenied(err);
