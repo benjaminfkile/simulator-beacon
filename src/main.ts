@@ -75,8 +75,8 @@ function startCore(args: {
         "hub build failed; backing off",
       ),
     log: {
-      info: (msg) => log.info(msg),
-      warn: (msg) => log.warn(msg),
+      info: (obj, msg) => log.info(obj, msg),
+      warn: (obj, msg) => log.warn(obj, msg),
     },
   });
 

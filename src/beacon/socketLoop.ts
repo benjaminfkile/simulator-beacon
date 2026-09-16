@@ -21,8 +21,8 @@ import type { HubClient } from "./hub.js";
 import type { BeaconState } from "./state.js";
 
 export interface SocketLogger {
-  info: (msg: string) => void;
-  warn: (msg: string) => void;
+  info: (obj: Record<string, unknown>, msg: string) => void;
+  warn: (obj: Record<string, unknown>, msg: string) => void;
 }
 
 export interface SocketLoopOptions {
@@ -69,26 +69,36 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
     }
   }
 
-  function markConnected(): void {
+  function markConnected(attemptTaken: number): void {
     if (state.socketState === "connected") return;
     state.socketState = "connected";
     state.reconnectCount += 1;
+    opts.log?.info(
+      {
+        channel: opts.ingestChannel,
+        reconnectCount: state.reconnectCount,
+        attempt: attemptTaken,
+      },
+      "socket connected",
+    );
     opts.onConnected?.();
   }
 
   async function tryRejoinOn(client: HubClient): Promise<void> {
-    // Same path as `channelEvicted auth_expired`. Counts every re-invocation
-    // whether or not it resolved (contracts 9.2 "rejoinCount ... on a still-open
-    // connection"). On success the send loop wakes; on failure the socket
-    // takes its close-or-failure branch so the send loop falls back to HTTP.
     state.rejoinCount += 1;
     try {
       await client.invoke("JoinPrivateChannel", opts.ingestChannel, opts.key);
       if (current === client) opts.onConnected?.();
-      opts.log?.info("socket: rejoined");
+      opts.log?.info(
+        { channel: opts.ingestChannel, rejoinCount: state.rejoinCount },
+        "socket rejoined",
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      opts.log?.warn(`socket: rejoin failed ${msg}`);
+      opts.log?.warn(
+        { channel: opts.ingestChannel, err: msg },
+        "socket rejoin failed",
+      );
       if (current === client) {
         attempt = 0;
         state.socketState = "reconnecting";
@@ -116,6 +126,7 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
       current = client;
       let deniedNext = false;
       let closed = false;
+      let closeErr: unknown = undefined;
       let signalClosed: () => void = () => {};
       const closeSignal = new Promise<void>((resolve) => {
         signalClosed = resolve;
@@ -126,8 +137,9 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
       // A rejection with no listener would surface as an unhandled promise
       // when start()/invoke settle before the race sees the close arm.
       closeRejection.catch(() => {});
-      client.onClose(() => {
+      client.onClose((err) => {
         closed = true;
+        if (err !== undefined && closeErr === undefined) closeErr = err;
         if (state.socketState === "connected") state.socketState = "reconnecting";
         if (current === client) void stopCurrent();
         signalClosed();
@@ -142,7 +154,9 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
         };
         if (env.channel !== opts.ingestChannel) return;
         if (env.event === "joined") {
-          markConnected();
+          const attemptTaken = attempt;
+          attempt = 0;
+          markConnected(attemptTaken);
           return;
         }
         if (env.event === "channelEvicted") {
@@ -150,7 +164,10 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
             env.data && typeof env.data === "object" && "reason" in (env.data as object)
               ? (env.data as { reason?: string }).reason
               : undefined;
-          opts.log?.info(`socket: evicted ${reason ?? "unknown"}`);
+          opts.log?.info(
+            { channel: opts.ingestChannel, reason: reason ?? "unknown" },
+            "socket evicted",
+          );
           if (reason === "auth_expired") {
             void tryRejoinOn(client);
             return;
@@ -165,13 +182,15 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
           client.invoke("JoinPrivateChannel", opts.ingestChannel, opts.key),
           closeRejection,
         ]);
+        const attemptTaken = attempt;
         attempt = 0;
-        markConnected();
+        markConnected(attemptTaken);
         while (!stopped && current === client && !closed) {
           await Promise.race([sleep(1000), closeSignal]);
         }
       } catch (err) {
         deniedNext = isJoinDenied(err);
+        if (closeErr === undefined) closeErr = err;
         state.socketState = "reconnecting";
         opts.onDisconnected?.();
       } finally {
@@ -188,6 +207,21 @@ export function startSocketLoop(opts: SocketLoopOptions): SocketLoop {
         delay = backoffMs(attempt);
         attempt += 1;
       }
+      const errMsg =
+        closeErr instanceof Error
+          ? closeErr.message
+          : closeErr !== undefined
+            ? String(closeErr)
+            : null;
+      opts.log?.info(
+        {
+          channel: opts.ingestChannel,
+          err: errMsg,
+          delayMs: delay,
+          attempt,
+        },
+        "socket closed; reconnecting",
+      );
       if (delay > 0) await sleep(delay);
     }
   }
