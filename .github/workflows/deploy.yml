@@ -26,6 +26,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run contracts:check
+      - name: beacon library check
+        run: npm run beacon:check
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
