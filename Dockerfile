@@ -1,6 +1,7 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
+COPY vendor ./vendor
 RUN npm ci --no-audit --no-fund
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
@@ -16,6 +17,7 @@ RUN apk add --no-cache ca-certificates curl \
       -o /etc/ssl/certs/rds-global-bundle.pem \
  && apk del curl
 COPY package.json package-lock.json* ./
+COPY vendor ./vendor
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/dist ./dist
 EXPOSE 3000

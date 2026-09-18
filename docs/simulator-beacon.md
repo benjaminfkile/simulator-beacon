@@ -10,7 +10,7 @@ Every name, shape, path, and rule below is the one in the shared contracts (`doc
 
 | Piece | Choice |
 |---|---|
-| Server | Node 22, TypeScript strict, ES modules, `fastify` for the HTTP surface, `@microsoft/signalr` (WebSockets only, negotiation skipped), `pg` for the one-row state, `jose` for ID-token verification against the admin pool's JWKS, native `fetch` for the WMSFO API, `pino` logging (JSON lines) |
+| Server | Node 22, TypeScript strict, ES modules, `fastify` for the HTTP surface, `beacon-library` for the beacon core (the socket loop, the send loop, the heartbeat loop, the REST client, and the leader monitor), `pg` for the one-row state, `jose` for ID-token verification against the admin pool's JWKS, native `fetch` for the WMSFO API, `pino` logging (JSON lines) |
 | Control page | `web/`: Vite, React 19, TypeScript, `oidc-client-ts` against the admin pool with the `wmsfo-simulator` client, hand-rolled CSS on the site's tokens (no UI library); one page |
 | Data | One Postgres table in its own database `wmsfo_sim_<env>` (section 6); flights are read from the WMSFO API through an API key and cached in memory per year |
 | Container | `node:22-alpine`, port 3000, `GET /api/health`; deployed exactly like the API (platform.md 3.6, 9.2a) |
@@ -21,13 +21,13 @@ Every name, shape, path, and rule below is the one in the shared contracts (`doc
 simulator-beacon/
   package.json  tsconfig.json  tsconfig.build.json  vitest.config.ts  Dockerfile  docker-compose.yaml  dev/  .github/workflows/deploy.yml  .github/workflows/ci.yml
   CONTRACTS_SHA  contracts/  scripts/check-contracts.mjs
+  BEACON_LIBRARY_SHA  vendor/  scripts/check-beacon-library.mjs
   docs/simulator-beacon.md  docs/DESIGN.md  docs/contracts.md  docs/README.md
   src/
-    main.ts                     boot: config, database, leader monitor, worker, http (listens on 3000)
+    main.ts                     boot: loads configuration, hands it to startService, wires SIGTERM and SIGINT
+    service.ts                  the wiring: database, control server, the beacon-library core, gateOnLeader, worker (listens on 3000)
     worker.ts                   the leader-only loop: reads the row on a 250 ms tick, feeds the scheduler's fixes into the beacon core, persists progress (sections 2 and 4)
     config.ts                   the SIM_* keys, validated (section 7)
-    beacon/                     the beacon core (contracts 9.2): identical in shape to legacy-beacon's
-      socketLoop.ts  sendLoop.ts  heartbeatLoop.ts  backoff.ts  rest.ts  hub.ts  state.ts
     flights/
       api.ts                    GET /admin/events and /admin/events/{id}/locations through the API key
       cache.ts                  per-year point cache in memory, loaded on demand
@@ -36,7 +36,6 @@ simulator-beacon/
     control/
       auth.ts                   admin-pool ID token check (section 5)
       routes.ts                 GET /api/health and the control routes of section 5 (state, years, flight, start, stop, restart, PATCH run)
-    leader.ts                   GET /internal/leader poll (contracts 7.5), 90 s expiry
     db.ts                       the sim_run row (section 6)
   web/
     index.html  vite.config.ts  vercel.json  playwright.config.ts  e2e/
@@ -61,13 +60,11 @@ Followers therefore look like nothing to the API; the beacon row shows one heart
 
 ## 3. The beacon core
 
-`src/beacon/` implements contracts 9.2 in TypeScript, the same loops Red-Nose runs in Kotlin:
+The core is the `beacon-library` package (contracts 9.2), vendored at the version in `package.json`. The service imports `createBeacon` and `gateOnLeader` from it; the socket loop, the send loop, the heartbeat loop, the REST client, the leader monitor, and the state shape are all in the library and are shared with the other Node beacons on the fleet. What is particular to the simulator lives in this repository:
 
-- `socketLoop.ts`: one `HubConnection` at a time (`withUrl(hubUrl, { skipNegotiation: true, transport: WebSockets })`, keep-alive 15 s, server timeout 30 s, no automatic reconnect: the loop owns it); `start()`, then `invoke("JoinPrivateChannel", ingestChannel, key)`; `connected` only on the `joined` ack for the ingest channel; `channelEvicted` with `auth_expired` re-joins immediately, `service_removed` retries the join every 5 s; a denied join waits 10 s; every other failure backs off 1 s, 2 s, 3 s, then 5 s forever; a close restarts the loop. The Node client's `invoke` resolves on the server's completion message for a void hub method, so no special overload is needed; the payload is passed as an object. The loop exposes `rejoin()` for the send loop's three-consecutive-hub-rejections trigger (below): every re-invocation increments `state.rejoinCount` and logs its outcome; on a throw the socket takes its close-or-failure branch so the send loop falls back to HTTP until the socket is `connected` again. Log lines: `socket: evicted <reason>`, `socket: rejoined`, `socket: rejoin failed <error>`.
-- `sendLoop.ts`: one `latestFix` with `seqLocal`; at most one send in flight; `invoke("SendToChannel", ingestChannel, "location", payload)` while connected, else `POST /locations` with `X-Beacon-Key`; a rejected hub invoke is a failed send and never falls back while the socket is up; three consecutive rejections while connected and a live event is named ask the socket loop to re-join once (none count without a live event); backoff on failure; `sendsFailedSinceBoot` counts only while `liveEventId` is non-null; a fix arriving mid-send replaces `latestFix` and goes out next. A `409 no_live_event` is a failed send like any other. **The HTTP window** (contracts 9.2): over HTTP a send starts no sooner than `HTTP_FALLBACK_INTERVAL_MS` (a constant 1000 in `sendLoop.ts`, overridable through `SendLoopOptions` for tests) after the previous HTTP send started; a fix arriving inside the window replaces `latestFix` and the newest goes out when the window ends; a socket that connects during the window takes the fix. The hub door has no window. **Three consecutive hub rejections while `socketState == connected` ask the socket loop to re-join once** via `socket.rejoin()` (the same path as `channelEvicted auth_expired`); the counter resets on any delivered send.
-- `heartbeatLoop.ts`: every 15 s, `POST /beacons/heartbeat` over HTTP with `{ sentAt, health, debug }`; the answer's `liveEventId` and `isActive` land in state; `401` sets `revoked` and changes nothing else; skew from the request midpoint.
-- `backoff.ts`: `[1000, 2000, 3000, 5000]`, the last repeats, reset on success, no maximum, no stopped state.
-- `state.ts`: the `ServiceState` shape of red-nose.md 4.3 minus the phone-only fields, exposed to the control API's `GET /control/state` and to the heartbeat's `debug`.
+- `service.ts` builds the beacon with the SIM_* configuration and hands it a `buildHealth` and a `buildDebug` that assemble the objects the heartbeat carries (`health.socketState`, `health.lastFixAgeS`, `health.batteryPercent` null; `debug` is section 8 below).
+- `gateOnLeader` runs the beacon on the leader only: `onStart` starts the worker of section 4 and `onStop` stops it. Every fix the worker emits calls `setLatestFix(beacon.state, ...)` and then `beacon.wake()` so the send loop takes it on its next tick.
+- The control API's `GET /control/state` and the health probe read the beacon's state (`beacon.state`) and the returned `Leader`; the worker writes the same state into `leader_state` every second so a follower can serve `GET /control/state`.
 
 Nothing is queued and nothing is persisted but the run row; the current fix is the only fix.
 
@@ -196,18 +193,19 @@ One manifest entry, `simulator-beacon-dev`, against the dev API: the simulator i
 
 ## 11. Tests
 
+The beacon core has its own suites in `beacon-library` and is not retested here. This repository tests the wiring on top of it and the parts particular to the simulator.
+
 | Suite | Covers |
 |---|---|
 | `scheduler` | inter-point delays divided by speed, the 100 ms floor and 30 s ceiling, the first fix immediate, loop at the end (cycles counted) or stop when loop is off, a speed change re-timing the next delay without a restart, a year change restarting from the first point, restart from zero, `recordedAt` is now |
 | `worker` | Stop pressed during the end-of-run await does not throw and the row ends stopped (a fake db whose `update` resolves after the stop); `leader_state.run` carries the live index and cycles after a loop restart; the 250 ms tick cadence with fake timers; the Start-resume rule in `controlRoutes`; seek while running re-arms the scheduler at the index and emits at once, seek while stopped emits exactly one point and stays stopped, the latest of three quick seeks wins, seek while failed is cleared without an emit |
 | `flightRoute` | a three-point fixture with null recorded speeds derives the two speeds to within 1% of hand-computed haversine values, recorded speeds pass through, `hasAltitude` is false when every altitude is null, an unknown year 400, a cache load failure 502 |
-| `beacon/sendLoop` | the decision table of contracts 9.2 with a fake hub and fake REST: delivered, rejected on the hub never falls back, HTTP when disconnected, mid-send replacement, `sendsFailedSinceBoot` only with a live event; the HTTP window (three fixes in one second over HTTP produce one POST carrying the newest; a socket that connects during the window takes the fix); three consecutive hub rejections trigger one `onHubRejectionThreshold` and the counter resets on a delivered send |
-| `beacon/socketLoop` | `connected` only on `joined`, eviction re-join, denied join waits 10 s, close restarts, backoff sequence; three rejections trigger one `rejoin()`; a throwing rejoin takes the failure branch (`socketState = reconnecting`, `rejoinCount` incremented on every re-invocation); the counter resets on success |
-| `beacon/heartbeat` | body shape validates against the vendored `heartbeat.schema.json`; `401` sets revoked; skew formula |
+| `service` | the worker starts only after this node becomes leader and stops when it becomes follower; a fix the worker emits reaches the hub while connected; the heartbeat body validates against `contracts/schema/heartbeat.schema.json` and carries the same `debug` keys as section 8 |
 | `flights/api` | paging follows `nextCursor`; `publishedOnly`; a `401` from the API marks the run failed with the code |
-| `control/auth` | issuer, audience, `token_use`, group, expiry, a people-pool token refused |
+| `flights/cache` | the listing counts published locations for a year and drops years with none |
+| `config` | every SIM_* key validated; `SIM_FORCE_LEADER` refused in prod |
+| `db` | the sim_run singleton created on boot; the seek clear only fires when `seek_to` still matches |
 | `control/routes` | every code in section 5 against a fake row; the Start-resume rule (same year keeps the row's `index` when in range, otherwise 0; `index == total` starts from 0); `GET /control/state` reads `run.index`, `run.cycles`, and `run.nextFixInMs` from `leader_state.run` when fresh, else from the row; `PATCH /control/run { index }` writes `seek_to`/`seek_at` and returns the state body, 409 no_run without a year on the row, 400 for a non-integer or negative `index` |
-| `leader` | 90 s expiry, follower on any failure, force flag refused in prod |
 | `timelineMath` and `Timeline` | `indexToX` and `xToIndex` round-trip within one point across the width; downsampling keeps the max of a bucket so a spike survives; hover fills the readout row; a drag of three pointer moves inside 200 ms sends one trailing `PATCH /control/run { index }` plus one on release with the released index; ArrowRight sends `index + 1` and Shift+ArrowRight `index + 10`; Home and End go to the ends; the empty-flight fallback reads `no flight loaded`; the button labels flip per the rule (Resume when stopped mid-recording for the selected year, Start otherwise; Pause always) |
 | `ControlPanel` (flight fetch) | fetches `GET /control/flight` on load and on every year change; a fetch failure shows the message on the error line and the chart reads `no flight loaded` |
 | Playwright (dev) | sign in through the admin pool, pick 2025 at 60x, Start, the state shows `running` with a rising index, the dev CDN `live/location.json` moves within 5 s while the dev event is live and this beacon is active, Stop; a second spec drags the playhead to the middle of the chart and expects `run.index` within 5% of half the total inside 2 s, then Pause and expects the status stopped with the index kept |
@@ -222,7 +220,7 @@ One manifest entry, `simulator-beacon-dev`, against the dev API: the simulator i
 - Replay preserves the recording's timing divided by the chosen speed, clamped to 100 ms and 30 s; `recordedAt` is the send time; a run stops at the end and restarts from the first point.
 - The control page signs in through the admin pool with its own client and requires the `admin` group; the server checks the ID token itself and never calls the WMSFO API on the operator's behalf.
 - One page, no UI library, the site's tokens copied in.
-- The beacon core is written to contracts 9.2 in TypeScript and copied verbatim into the legacy beacon; the two stay identical by hand.
+- Both Node beacons on the fleet, this one and the legacy beacon, are built on `beacon-library`.
 - A run loops by default and every control applies while it runs; the row is the only source of truth and the worker follows it every second.
 - A seek is a row column (`seek_to`) the worker clears on the next tick, not an in-process call, so it works on whichever node took the request; the leader on the other node reads `seek_to` on its 250 ms tick and acts.
 

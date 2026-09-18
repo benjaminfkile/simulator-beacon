@@ -10,4 +10,4 @@ Read `docs/` before touching anything:
 
 ## Run, test, build
 
-Requires Node 22 or newer. In the root (the service) and again in `web/` (the control page): `npm ci`, then `npm test`, `npm run typecheck`, `npm run build`. `npm run contracts:check` in the root verifies `contracts/` against `wmsfo-api` at the pinned `CONTRACTS_SHA`. A local run against dev uses `SIM_FORCE_LEADER=true`; `docs/simulator-beacon.md` section 10 has the recipe and section 7 the configuration keys.
+Requires Node 22 or newer. In the root (the service) and again in `web/` (the control page): `npm ci`, then `npm test`, `npm run typecheck`, `npm run build`. `npm run contracts:check` in the root verifies `contracts/` against `wmsfo-api` at the pinned `CONTRACTS_SHA`. `npm run beacon:check` verifies the vendored `beacon-library` tarball against `vendor/beacon-library-1.0.0.tgz.sha256` and confirms the pins around it. A local run against dev uses `SIM_FORCE_LEADER=true`; `docs/simulator-beacon.md` section 10 has the recipe and section 7 the configuration keys.

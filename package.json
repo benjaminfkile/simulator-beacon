@@ -12,11 +12,12 @@
     "start": "node dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "contracts:check": "node scripts/check-contracts.mjs"
+    "contracts:check": "node scripts/check-contracts.mjs",
+    "beacon:check": "node scripts/check-beacon-library.mjs"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
-    "@microsoft/signalr": "8.0.7",
+    "beacon-library": "file:vendor/beacon-library-1.0.0.tgz",
     "fastify": "^4.29.1",
     "jose": "^6.2.12",
     "pg": "8.13.1",
