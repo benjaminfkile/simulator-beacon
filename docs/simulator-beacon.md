@@ -19,11 +19,12 @@ Every name, shape, path, and rule below is the one in the shared contracts (`doc
 
 ```
 simulator-beacon/
-  package.json  tsconfig.json  Dockerfile  .github/workflows/deploy.yml  .github/workflows/ci.yml
+  package.json  tsconfig.json  tsconfig.build.json  vitest.config.ts  Dockerfile  docker-compose.yaml  dev/  .github/workflows/deploy.yml  .github/workflows/ci.yml
   CONTRACTS_SHA  contracts/  scripts/check-contracts.mjs
   docs/simulator-beacon.md  docs/DESIGN.md  docs/contracts.md  docs/README.md
   src/
-    main.ts                     boot: config, database, leader monitor, worker, http
+    main.ts                     boot: config, database, leader monitor, worker, http (listens on 3000)
+    worker.ts                   the leader-only loop: reads the row on a 250 ms tick, feeds the scheduler's fixes into the beacon core, persists progress (sections 2 and 4)
     config.ts                   the SIM_* keys, validated (section 7)
     beacon/                     the beacon core (contracts 9.2): identical in shape to legacy-beacon's
       socketLoop.ts  sendLoop.ts  heartbeatLoop.ts  backoff.ts  rest.ts  hub.ts  state.ts
@@ -31,14 +32,16 @@ simulator-beacon/
       api.ts                    GET /admin/events and /admin/events/{id}/locations through the API key
       cache.ts                  per-year point cache in memory, loaded on demand
       scheduler.ts              turns a recording plus a speed into timed fixes (section 4)
+      series.ts                 the flight series behind GET /control/flight: speed and altitude against time, the index the seek writes
     control/
       auth.ts                   admin-pool ID token check (section 5)
-      routes.ts                 GET /control/state, GET /control/years, POST /control/start, POST /control/stop, POST /control/restart
+      routes.ts                 GET /api/health and the control routes of section 5 (state, years, flight, start, stop, restart, PATCH run)
     leader.ts                   GET /internal/leader poll (contracts 7.5), 90 s expiry
     db.ts                       the sim_run row (section 6)
-    health.ts                   GET /api/health
   web/
-    index.html  vite.config.ts  vercel.json  src/main.tsx  src/App.tsx  src/auth.ts  src/api.ts  src/tokens.css  src/App.module.css
+    index.html  vite.config.ts  vercel.json  playwright.config.ts  e2e/
+    src/main.tsx  App.tsx  config.ts (the VITE_ values, validated)  ConfigurationNotice.tsx  auth.ts  api.ts  types.ts
+    src/StateCard.tsx  Timeline.tsx  timelineMath.ts  tokens.css  App.module.css
   tests/
 ```
 

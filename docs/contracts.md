@@ -1172,7 +1172,7 @@ An API key request on these three endpoints is `403 forbidden` whatever its capa
 | `GET /admin/cookie-types` | | `200 { "items": CookieType[] }` by `sort`, `id` | |
 | `POST /admin/cookie-types` **[snapshot]** | `{ "name": "...", "sort": 10, "active": true, "icon": null }` (`name` 1 to 100; `sort` -1000 to 1000; `icon` an `Icon` or null; all four required) | `201 CookieType` | `409 event_live`, `404` (media icon), `409 media_not_ready`, `400` (media icon not svg, unknown library id) |
 | `PATCH /admin/cookie-types/{id}` **[snapshot]** | subset of `name`, `sort`, `active`, `icon` | `200 CookieType` | `404`, `409 event_live`, `409 media_not_ready`, `400` |
-| `DELETE /admin/cookie-types/{id}` **[snapshot]** | | `204`; its cookies are deleted with it (the tallies drop by their count, live or not; the impact says how many and warns while live) | `404` |
+| `DELETE /admin/cookie-types/{id}` **[snapshot]** | | `204`; its cookies are deleted with it (the tallies drop by their count; the impact says how many and warns while live) | `404`, `409 event_live` (cookie type writes are locked while an event is live) |
 
 Every write in this group returns `409 event_live` while any event has `status_id = 3`. A type is deleted only while no cookie references it; `active: false` removes a type from the snapshot without deleting it. Artwork is an icon: a library id or an uploaded SVG media asset.
 
@@ -1365,16 +1365,13 @@ Actions are `create`, `update`, `delete` for the generic writes and the endpoint
 | `cookie_limit_reached` | 409 | `POST /cookies` |
 | `address_taken`, `already_subscribed`, `already_verified` | 409 | subscriptions |
 | `event_status_unchanged`, `event_not_current`, `another_event_live`, `scheduled_at_required`, `no_healthy_beacon` | 409 | `POST /admin/events/{id}/status`; `scheduled_at_required` also on `PATCH /admin/events/{id}` |
-| `cookie_type_in_use` | 409 | `DELETE /admin/cookie-types/{id}` |
 | `current_event_live` | 409 | `POST /admin/events/{id}/current` |
 | `event_live` | 409 | cookie type writes while an event is live; deleting a live event |
-| `event_has_locations` | 409 | `DELETE /admin/events/{id}` |
 | `year_taken` | 409 | event create, patch, and clone |
 | `place_cycle` | 400 | `PATCH /admin/places/{id}` moving a place under itself |
 | `place_name_taken` | 409 | place create and patch (unique among siblings) |
 | `place_has_children`, `place_has_codes` | 409 | `DELETE /admin/places/{id}` |
 | `year_exists` | 409 | `POST /admin/sponsors/{id}/years/{eventYear}/copy-from/{sourceYear}` when the sponsor already has `eventYear` |
-| `route_in_use` | 409 | `DELETE /admin/routes/{id}` |
 | `pinned_position_taken` | 409 | `PUT /admin/sponsors/{id}/years/{eventYear}` |
 | `name_taken` | 409 | `POST /admin/api-keys` |
 | `beacon_revoked` | 409 | activate and rotate on a revoked beacon |
@@ -1388,7 +1385,6 @@ Actions are `create`, `update`, `delete` for the generic writes and the endpoint
 | `media_not_ready` | 409 | a sponsor or cookie type references a media asset that is not `ready` |
 | `media_not_pending` | 409 | confirm on a non-pending asset |
 | `upload_not_found` | 404 | confirm when the object never arrived |
-| `media_in_use` | 409 | `DELETE /admin/media/{id}`; `details.usage` |
 | `preview_token_invalid` | 404 | `GET /preview/document` |
 | `payload_too_large` | 413 | body limits |
 | `unsupported_media_type` | 415 | uploads |
@@ -1433,8 +1429,8 @@ create table event (
   went_live_at  timestamptz,
   ended_at      timestamptz,
   funds_percent integer not null default 0 check (funds_percent between 0 and 100),
-  route_id      bigint references route (id),    -- flight recording (1.4), never public
-  route_image_media_id uuid references media_asset (id),   -- the route poster the site shows (1.3)
+  route_id      bigint references route (id) on delete set null,    -- flight recording (1.4), never public
+  route_image_media_id uuid references media_asset (id) on delete set null,   -- the route poster the site shows (1.3)
   final_cookie_tally jsonb,                       -- set on entry into status 4, null otherwise (1.2)
   status_notified_at timestamptz,                 -- when the current status was last announced; cleared by every status change (4.5)
   next_seq      bigint not null default 1,
@@ -1485,6 +1481,7 @@ create table beacon (
   stale_since        timestamptz,
   telemetry          jsonb,
   min_interval_ms    integer,                        -- overrides location_min_interval_ms; null means the setting (contracts 4.2, 7.2)
+  hub_allowed        boolean not null default true,  -- false: the authorize callback denies the join (2.4) and the message path answers 403 (2.5)
   fixes_stored       bigint not null default 0,
   fixes_carried      bigint not null default 0,
   fixes_rate_limited bigint not null default 0,
@@ -1516,7 +1513,7 @@ create index beacon_log_beacon on beacon_log (beacon_id, received_at desc);
 
 create table location (
   id           bigint generated always as identity primary key,
-  event_id     bigint not null references event (id),
+  event_id     bigint not null references event (id) on delete cascade,
   beacon_id    bigint not null references beacon (id),
   seq          bigint not null,
   recorded_at  timestamptz not null,
@@ -1567,7 +1564,7 @@ create table sponsor (
   website_url       text,
   fb_url            text,
   ig_url            text,
-  logo_media_id     uuid references media_asset (id),
+  logo_media_id     uuid references media_asset (id) on delete set null,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now()
 );
@@ -1639,7 +1636,7 @@ create table cookie (
   id             bigint generated always as identity primary key,
   event_id       bigint not null references event (id) on delete cascade,
   person_id      bigint not null references person (id) on delete cascade,
-  cookie_type_id bigint not null references cookie_type (id),
+  cookie_type_id bigint not null references cookie_type (id) on delete cascade,
   note           text,
   left_at        timestamptz not null default now(),
   hidden_at      timestamptz,   -- always null: moderation was removed; the columns stay so the index and the tally query are unchanged
@@ -1922,8 +1919,8 @@ update beacon set last_seen_at = now(), last_location_at = now(), stale_since = 
 --
 -- carried branch (filter carried, or the insert conflicted): no row.
 update event  set next_seq = next_seq + 1 where id = $event;               -- next_seq still advances; that seq goes to the live object
-update beacon set last_seen_at = now(), stale_since = null,
-                  fixes_carried = fixes_carried + 1 where id = $beacon;   -- last_location_at untouched
+update beacon set last_seen_at = now(), last_location_at = now(), stale_since = null,
+                  fixes_carried = fixes_carried + 1 where id = $beacon;   -- the beacon did deliver a fix
 --
 select version, url from snapshot where id = 1;                            -- carried into the live object
 commit;
