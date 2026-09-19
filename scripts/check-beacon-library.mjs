@@ -14,8 +14,8 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
-const tarballPath = resolve(repoRoot, "vendor/beacon-library-1.0.0.tgz");
-const shaFile = resolve(repoRoot, "vendor/beacon-library-1.0.0.tgz.sha256");
+const tarballPath = resolve(repoRoot, "vendor/beacon-library-1.1.0.tgz");
+const shaFile = resolve(repoRoot, "vendor/beacon-library-1.1.0.tgz.sha256");
 const pkgPath = resolve(repoRoot, "package.json");
 const libSha = resolve(repoRoot, "BEACON_LIBRARY_SHA");
 
@@ -75,13 +75,13 @@ function readCommit(path) {
 const expected = readSha256(shaFile);
 const actual = computeSha256(tarballPath);
 if (expected !== actual) {
-  die(`beacon-library-1.0.0.tgz sha256 mismatch: expected ${expected}, got ${actual}`);
+  die(`beacon-library-1.1.0.tgz sha256 mismatch: expected ${expected}, got ${actual}`);
 }
 
 const pkg = readJson(pkgPath);
 const dep = pkg && pkg.dependencies ? pkg.dependencies["beacon-library"] : undefined;
-if (dep !== "file:vendor/beacon-library-1.0.0.tgz") {
-  die(`package.json dependency for beacon-library must be "file:vendor/beacon-library-1.0.0.tgz" (got ${JSON.stringify(dep)})`);
+if (dep !== "file:vendor/beacon-library-1.1.0.tgz") {
+  die(`package.json dependency for beacon-library must be "file:vendor/beacon-library-1.1.0.tgz" (got ${JSON.stringify(dep)})`);
 }
 
 readCommit(libSha);
