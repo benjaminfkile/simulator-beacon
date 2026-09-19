@@ -816,6 +816,325 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
     await worker.stop();
   });
 
+  it("a transient flight load failure on hand-off keeps the row loading, retries, and resumes from the row's index", async () => {
+    // A running row picked up by a new leader whose first loadYear throws a
+    // 502 must not fail the run: the row stays loading with lastError set and
+    // the retry succeeds after the backoff, resuming from the persisted index.
+    const points = makePoints(100);
+    let currentTime = 0;
+    const db = makeDb({ status: "running", year: 2025, speed: 20, index: 42, total: 100 });
+    let loadCalls = 0;
+    const cache: FlightsCache = {
+      async listYears() {
+        return [];
+      },
+      async loadYear(year) {
+        loadCalls += 1;
+        if (loadCalls === 1) throw new ApiError(502, "http_502", "http 502");
+        return {
+          year,
+          eventId: 1,
+          name: "2025",
+          points,
+          series: {
+            pointCount: points.length,
+            firstRecordedAt: points[0]!.recordedAt,
+            lastRecordedAt: points.at(-1)!.recordedAt,
+            durationMs: 0,
+            hasAltitude: false,
+            speedSource: "recorded",
+            points: [],
+          },
+          loadedAt: new Date().toISOString(),
+          loadMs: 0,
+        };
+      },
+      async getOrLoadYear(year) {
+        return this.loadYear(year);
+      },
+      getCached: () => undefined,
+      async refresh() {},
+      cachedYears: () => [],
+      lastLoad: () => ({ at: null, ms: null }),
+    };
+    const stub = makeSyncScheduler();
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: () => undefined,
+      onStop: () => undefined,
+      tickMs: 60_000,
+      now: () => currentTime,
+      startScheduler: stub.runningFactory,
+    });
+    // First tick: hand-off tries to load, hits the transient 502, writes
+    // loading and arms the 1000 ms retry.
+    await worker.tick();
+    expect(loadCalls).toBe(1);
+    expect(db.row.status).toBe("loading");
+    expect(db.row.lastError).toContain("http_502");
+    // Before the delay elapses: the tick does not retry.
+    await worker.tick();
+    expect(loadCalls).toBe(1);
+    expect(db.row.status).toBe("loading");
+    // After the delay: the retry succeeds and the run resumes from index 42.
+    currentTime += 1000;
+    await worker.tick();
+    expect(loadCalls).toBe(2);
+    expect(db.row.status).toBe("running");
+    expect(db.row.lastError).toBeNull();
+    expect(worker.currentIndex()).toBe(42);
+    const lastRunning = db.updates.filter((u) => u.status === "running").at(-1);
+    expect(lastRunning?.index).toBe(42);
+    // No failed write ever happened.
+    expect(db.updates.filter((u) => u.status === "failed")).toEqual([]);
+    await worker.stop();
+  });
+
+  it("the retry delays follow 1000, 2000, 3000, 5000, 5000 across five transient failures", async () => {
+    let currentTime = 0;
+    const db = makeDb({ status: "loading", year: 2025, speed: 20, index: 0 });
+    let loadCalls = 0;
+    const cache: FlightsCache = {
+      async listYears() {
+        return [];
+      },
+      async loadYear() {
+        loadCalls += 1;
+        throw new ApiError(503, "http_503", "http 503");
+      },
+      async getOrLoadYear() {
+        throw new ApiError(503, "http_503", "http 503");
+      },
+      getCached: () => undefined,
+      async refresh() {},
+      cachedYears: () => [],
+      lastLoad: () => ({ at: null, ms: null }),
+    };
+    const stub = makeSyncScheduler();
+    const warns: Array<{ delayMs: number }> = [];
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: () => undefined,
+      onStop: () => undefined,
+      tickMs: 60_000,
+      now: () => currentTime,
+      startScheduler: stub.runningFactory,
+      log: {
+        warn: (obj) => warns.push({ delayMs: obj.delayMs as number }),
+        error: () => undefined,
+      },
+    });
+    await worker.tick();
+    expect(loadCalls).toBe(1);
+    expect(db.row.status).toBe("loading");
+    expect(db.row.lastError).toContain("http_503");
+    expect(warns.at(-1)?.delayMs).toBe(1000);
+    currentTime += 1000;
+    await worker.tick();
+    expect(loadCalls).toBe(2);
+    expect(warns.at(-1)?.delayMs).toBe(2000);
+    currentTime += 2000;
+    await worker.tick();
+    expect(loadCalls).toBe(3);
+    expect(warns.at(-1)?.delayMs).toBe(3000);
+    currentTime += 3000;
+    await worker.tick();
+    expect(loadCalls).toBe(4);
+    expect(warns.at(-1)?.delayMs).toBe(5000);
+    currentTime += 5000;
+    await worker.tick();
+    expect(loadCalls).toBe(5);
+    expect(warns.at(-1)?.delayMs).toBe(5000);
+    expect(db.row.status).toBe("loading");
+    expect(db.row.lastError).toContain("http_503");
+    await worker.stop();
+  });
+
+  it("a thrown non-ApiError (a network TypeError) is transient", async () => {
+    let currentTime = 0;
+    const db = makeDb({ status: "loading", year: 2025, speed: 20, index: 0 });
+    let loadCalls = 0;
+    const cache: FlightsCache = {
+      async listYears() {
+        return [];
+      },
+      async loadYear() {
+        loadCalls += 1;
+        throw new TypeError("fetch failed");
+      },
+      async getOrLoadYear() {
+        throw new TypeError("fetch failed");
+      },
+      getCached: () => undefined,
+      async refresh() {},
+      cachedYears: () => [],
+      lastLoad: () => ({ at: null, ms: null }),
+    };
+    const stub = makeSyncScheduler();
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: () => undefined,
+      onStop: () => undefined,
+      tickMs: 60_000,
+      now: () => currentTime,
+      startScheduler: stub.runningFactory,
+    });
+    await worker.tick();
+    expect(loadCalls).toBe(1);
+    expect(db.row.status).toBe("loading");
+    expect(db.row.lastError).toContain("fetch failed");
+    expect(db.updates.filter((u) => u.status === "failed")).toEqual([]);
+    await worker.stop();
+  });
+
+  it("permanent ApiError 4xx (401 and 404) still fail the run at once", async () => {
+    for (const status of [401, 404] as const) {
+      const db = makeDb({ status: "loading", year: 2025, speed: 20, index: 0 });
+      const cache: FlightsCache = {
+        async listYears() {
+          return [];
+        },
+        async loadYear() {
+          throw new ApiError(status, "not_ok", `http ${status}`);
+        },
+        async getOrLoadYear() {
+          throw new ApiError(status, "not_ok", `http ${status}`);
+        },
+        getCached: () => undefined,
+        async refresh() {},
+        cachedYears: () => [],
+        lastLoad: () => ({ at: null, ms: null }),
+      };
+      const stub = makeSyncScheduler();
+      const worker = startWorker({
+        db,
+        cache,
+        buildLeaderState: () => ({}),
+        onEmit: () => undefined,
+        onStop: () => undefined,
+        tickMs: 60_000,
+        startScheduler: stub.runningFactory,
+      });
+      await worker.tick();
+      expect(db.row.status).toBe("failed");
+      expect(db.row.lastError).toContain(`http ${status}`);
+      await worker.stop();
+    }
+  });
+
+  it("Stop during the retry wait clears the pending retry and no further loadYear happens", async () => {
+    let currentTime = 0;
+    const db = makeDb({ status: "loading", year: 2025, speed: 20, index: 0 });
+    let loadCalls = 0;
+    const cache: FlightsCache = {
+      async listYears() {
+        return [];
+      },
+      async loadYear() {
+        loadCalls += 1;
+        throw new ApiError(502, "http_502", "http 502");
+      },
+      async getOrLoadYear() {
+        throw new ApiError(502, "http_502", "http 502");
+      },
+      getCached: () => undefined,
+      async refresh() {},
+      cachedYears: () => [],
+      lastLoad: () => ({ at: null, ms: null }),
+    };
+    const stub = makeSyncScheduler();
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: () => undefined,
+      onStop: () => undefined,
+      tickMs: 60_000,
+      now: () => currentTime,
+      startScheduler: stub.runningFactory,
+    });
+    await worker.tick();
+    expect(loadCalls).toBe(1);
+    expect(db.row.status).toBe("loading");
+    // Operator presses Stop during the wait.
+    await db.update({ status: "stopped" });
+    // Advance well past every possible delay: no retry should ever run.
+    currentTime += 60_000;
+    await worker.tick();
+    await worker.tick();
+    expect(loadCalls).toBe(1);
+    expect(db.row.status).toBe("stopped");
+    await worker.stop();
+  });
+
+  it("Start (loading written by the control API) that hits one transient failure also recovers", async () => {
+    const points = makePoints(10);
+    let currentTime = 0;
+    const db = makeDb({ status: "loading", year: 2025, speed: 20, index: 0 });
+    let loadCalls = 0;
+    const cache: FlightsCache = {
+      async listYears() {
+        return [];
+      },
+      async loadYear(year) {
+        loadCalls += 1;
+        if (loadCalls === 1) throw new ApiError(500, "boom", "boom");
+        return {
+          year,
+          eventId: 1,
+          name: "2025",
+          points,
+          series: {
+            pointCount: points.length,
+            firstRecordedAt: points[0]!.recordedAt,
+            lastRecordedAt: points.at(-1)!.recordedAt,
+            durationMs: 0,
+            hasAltitude: false,
+            speedSource: "recorded",
+            points: [],
+          },
+          loadedAt: new Date().toISOString(),
+          loadMs: 0,
+        };
+      },
+      async getOrLoadYear(year) {
+        return this.loadYear(year);
+      },
+      getCached: () => undefined,
+      async refresh() {},
+      cachedYears: () => [],
+      lastLoad: () => ({ at: null, ms: null }),
+    };
+    const stub = makeSyncScheduler();
+    const worker = startWorker({
+      db,
+      cache,
+      buildLeaderState: () => ({}),
+      onEmit: () => undefined,
+      onStop: () => undefined,
+      tickMs: 60_000,
+      now: () => currentTime,
+      startScheduler: stub.runningFactory,
+    });
+    await worker.tick();
+    expect(loadCalls).toBe(1);
+    expect(db.row.status).toBe("loading");
+    expect(db.row.lastError).toContain("boom");
+    currentTime += 1000;
+    await worker.tick();
+    expect(loadCalls).toBe(2);
+    expect(db.row.status).toBe("running");
+    expect(db.row.lastError).toBeNull();
+    expect(db.updates.filter((u) => u.status === "failed")).toEqual([]);
+    await worker.stop();
+  });
+
   it("the tickMs defaults to 250 ms so a control change lands within a quarter second", async () => {
     // Fake timers verify the recurring cadence: each 250 ms elapses one tick.
     vi.useFakeTimers();

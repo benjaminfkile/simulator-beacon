@@ -84,6 +84,8 @@ Nothing is queued and nothing is persisted but the run row; the current fix is t
 
 **Run states.** `stopped` (nothing sent), `running` (fixes flowing), `loading` (points being fetched, a few seconds), `failed` (the API refused the flight: key revoked, year gone; the reason is in `lastError` and the row stays until the next start). The heartbeat keeps going in every state, so the beacon is healthy on the panel whether or not it is replaying; going live with it active and stopped shows the waiting-for-fix state on the tracker until Start is pressed.
 
+**Transient flight-load failures.** A flight load that fails for a transient reason (the API unreachable, 408, 429, or a 5xx) keeps the run at `loading` with the reason in `lastError` and is retried on the beacon's backoff (1000, 2000, 3000, 5000 ms, then 5000 ms forever). Only a permanent failure (no year, an invalid speed, an `ApiError` with a 4xx status other than 408 and 429, or a flight with no published points) fails the run.
+
 ---
 
 ## 5. The control surface
