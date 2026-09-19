@@ -38,6 +38,7 @@ export interface WorkerEmit {
 }
 
 export interface WorkerLogger {
+  warn?: (obj: Record<string, unknown>, msg: string) => void;
   error: (obj: Record<string, unknown>, msg: string) => void;
 }
 
@@ -77,10 +78,33 @@ interface ActiveRun {
   nextFixInMs: number | null;
 }
 
+// A flight load that fails for a transient reason (the API unreachable, 408,
+// 429, or a 5xx) keeps the run at loading with the reason in lastError and
+// retries on this schedule; the tail repeats 5000 ms forever
+// (simulator-beacon.md 4).
+const RETRY_DELAYS_MS: readonly number[] = [1000, 2000, 3000, 5000];
+const RETRY_DELAY_TAIL_MS = 5000;
+
+function nextRetryDelayMs(attempt: number): number {
+  return attempt <= RETRY_DELAYS_MS.length
+    ? RETRY_DELAYS_MS[attempt - 1]!
+    : RETRY_DELAY_TAIL_MS;
+}
+
+function isTransientLoadError(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return true;
+  const s = err.status;
+  if (s == null) return true;
+  if (s === 408 || s === 429) return true;
+  if (s >= 500) return true;
+  return false;
+}
+
 export function startWorker(opts: WorkerOptions): WorkerHandle {
   const tickMs = opts.tickMs ?? 250;
   const persistEvery = Math.max(1, opts.persistLeaderStateEveryTicks ?? 4);
   const isoNow = opts.isoNow ?? (() => new Date().toISOString());
+  const now = opts.now ?? (() => Date.now());
   const startSched = opts.startScheduler ?? startScheduler;
   const log = opts.log;
   let stopped = false;
@@ -90,6 +114,19 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
   let lastRunStatus: SimRunStatus | null = null;
   let lastPersistedIndex = 0;
   let ticksSinceLeaderStateWrite = 0;
+  // Pending retry for a transient flight-load failure. When the row is still
+  // `loading` with no active scheduler and `now() >= pendingRetryAt`, the tick
+  // calls loadAndStart again with the row's current index. The counter resets
+  // on a successful load, on a year change, and on a `stopped` row.
+  let pendingRetryAt: number | null = null;
+  let retryAttempt = 0;
+  let retryYear: number | null = null;
+
+  function resetLoadRetry(): void {
+    pendingRetryAt = null;
+    retryAttempt = 0;
+    retryYear = null;
+  }
 
   function logError(err: unknown, where: string, extra: Record<string, unknown> = {}): void {
     if (!log) return;
@@ -222,6 +259,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
         logError(err, "update failed(no year)");
       }
       lastRunStatus = "failed";
+      resetLoadRetry();
       await persistLeaderState();
       return;
     }
@@ -232,6 +270,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
         logError(err, "update failed(bad speed)");
       }
       lastRunStatus = "failed";
+      resetLoadRetry();
       await persistLeaderState();
       return;
     }
@@ -245,12 +284,39 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
           : err instanceof Error
             ? err.message
             : String(err);
+      if (isTransientLoadError(err)) {
+        // The row stays at loading with lastError set so the control page shows
+        // why; the tick retries after the backoff delay.
+        retryAttempt += 1;
+        const delay = nextRetryDelayMs(retryAttempt);
+        pendingRetryAt = now() + delay;
+        retryYear = row.year;
+        try {
+          await opts.db.update({ status: "loading", lastError: message });
+        } catch (dbErr) {
+          logError(dbErr, "update loading(transient)");
+        }
+        lastRunStatus = "loading";
+        if (log?.warn) {
+          try {
+            log.warn(
+              { year: row.year, err: message, delayMs: delay },
+              "flight load failed; retrying",
+            );
+          } catch {
+            // A logger throw must not escape into the loop.
+          }
+        }
+        await persistLeaderState();
+        return;
+      }
       try {
         await opts.db.update({ status: "failed", lastError: message });
       } catch (dbErr) {
         logError(dbErr, "update failed(load)");
       }
       lastRunStatus = "failed";
+      resetLoadRetry();
       await persistLeaderState();
       return;
     }
@@ -261,6 +327,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
         logError(err, "update failed(no points)");
       }
       lastRunStatus = "failed";
+      resetLoadRetry();
       await persistLeaderState();
       return;
     }
@@ -303,6 +370,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       logError(err, "update running");
     }
     lastRunStatus = "running";
+    resetLoadRetry();
     scheduler.start(startIndex);
     // A status change the worker made: persist leader_state immediately.
     await persistLeaderState();
@@ -410,12 +478,30 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       let workerChangedStatus = false;
       if (row.status === "stopped" || row.status === "failed") {
         if (active) await stopActive();
+        // A stopped or failed row clears any pending retry from a transient
+        // flight-load failure so an operator's Stop during the wait wins at
+        // once.
+        resetLoadRetry();
       } else if (row.status === "loading" && prev !== "loading") {
         if (active) await stopActive();
+        resetLoadRetry();
         await loadAndStart(row);
         // loadAndStart flipped the row's status (running or failed) itself
         // and persisted leader_state; skip the cadence-based write below.
         return;
+      } else if (row.status === "loading" && !active) {
+        // Still loading after a transient flight-load failure: retry when the
+        // backoff delay has elapsed, or right away if the row's year changed
+        // during the wait.
+        if (row.year !== retryYear) {
+          resetLoadRetry();
+          await loadAndStart(row);
+          return;
+        }
+        if (pendingRetryAt != null && now() >= pendingRetryAt) {
+          await loadAndStart(row);
+          return;
+        }
       } else if (row.status === "running") {
         // The API writes `loading` and the worker flips to `running`; a row
         // directly at `running` on the first tick after a leader hand-off is
@@ -438,6 +524,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
           } catch (err) {
             logError(err, "update year switch");
           }
+          resetLoadRetry();
           await loadAndStart(patched);
           return;
         }

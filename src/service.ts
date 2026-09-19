@@ -263,6 +263,7 @@ export async function startService(config: Config, deps: ServiceDeps = {}): Prom
         onStop: () => undefined,
         ...(deps.workerTickMs != null ? { tickMs: deps.workerTickMs } : {}),
         log: {
+          warn: (obj, msg) => log.warn(obj, msg),
           error: (obj, msg) => log.error(obj, msg),
         },
       });
