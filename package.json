@@ -13,6 +13,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "contracts:check": "node scripts/check-contracts.mjs",
+    "check:no-infra": "node scripts/check-no-infra.mjs",
     "beacon:check": "node scripts/check-beacon-library.mjs"
   },
   "dependencies": {
