@@ -99,6 +99,9 @@ function makeCache(entries: Map<number, CachedFlight>, opts: { throwOnLoad?: Err
       return e;
     },
     getCached: (year: number) => entries.get(year),
+    async hasYear() {
+      return true;
+    },
     async refresh() {},
     cachedYears: () => Array.from(entries.keys()),
     lastLoad: () => ({ at: null, ms: null }),

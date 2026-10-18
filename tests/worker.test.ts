@@ -136,6 +136,9 @@ function makeCache(points: LocationRow[]): CountedCache {
       return this.loadYear(year);
     },
     getCached: () => undefined,
+    async hasYear() {
+      return true;
+    },
     async refresh() {},
     cachedYears: () => [2025],
     lastLoad: () => ({ at: null, ms: null }),
@@ -285,6 +288,9 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
         throw new ApiError(401, "unauthenticated", "key revoked");
       },
       getCached: () => undefined,
+      async hasYear() {
+        return true;
+      },
       async refresh() {},
       cachedYears: () => [],
       lastLoad: () => ({ at: null, ms: null }),
@@ -853,6 +859,9 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
         return this.loadYear(year);
       },
       getCached: () => undefined,
+      async hasYear() {
+        return true;
+      },
       async refresh() {},
       cachedYears: () => [],
       lastLoad: () => ({ at: null, ms: null }),
@@ -908,6 +917,9 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
         throw new ApiError(503, "http_503", "http 503");
       },
       getCached: () => undefined,
+      async hasYear() {
+        return true;
+      },
       async refresh() {},
       cachedYears: () => [],
       lastLoad: () => ({ at: null, ms: null }),
@@ -970,6 +982,9 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
         throw new TypeError("fetch failed");
       },
       getCached: () => undefined,
+      async hasYear() {
+        return true;
+      },
       async refresh() {},
       cachedYears: () => [],
       lastLoad: () => ({ at: null, ms: null }),
@@ -1007,6 +1022,9 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
           throw new ApiError(status, "not_ok", `http ${status}`);
         },
         getCached: () => undefined,
+        async hasYear() {
+          return true;
+        },
         async refresh() {},
         cachedYears: () => [],
         lastLoad: () => ({ at: null, ms: null }),
@@ -1044,6 +1062,9 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
         throw new ApiError(502, "http_502", "http 502");
       },
       getCached: () => undefined,
+      async hasYear() {
+        return true;
+      },
       async refresh() {},
       cachedYears: () => [],
       lastLoad: () => ({ at: null, ms: null }),
@@ -1107,6 +1128,9 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
         return this.loadYear(year);
       },
       getCached: () => undefined,
+      async hasYear() {
+        return true;
+      },
       async refresh() {},
       cachedYears: () => [],
       lastLoad: () => ({ at: null, ms: null }),
@@ -1165,6 +1189,245 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
       await worker.stop();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  // A fake cache for the year rules: `loadYear` and `hasYear` follow the
+  // handlers the test sets, and the calls are counted.
+  function makeYearCache(points: LocationRow[]): FlightsCache & {
+    loadCalls: number;
+    hasYearCalls: number;
+    load: () => Promise<void>;
+    has: () => Promise<boolean>;
+  } {
+    const cache = {
+      loadCalls: 0,
+      hasYearCalls: 0,
+      load: async () => undefined as void,
+      has: async () => true,
+      async listYears() {
+        return [];
+      },
+      async loadYear(year: number) {
+        cache.loadCalls += 1;
+        await cache.load();
+        return {
+          year,
+          eventId: 1,
+          name: String(year),
+          points,
+          series: {
+            pointCount: points.length,
+            firstRecordedAt: points[0]?.recordedAt ?? "",
+            lastRecordedAt: points.at(-1)?.recordedAt ?? "",
+            durationMs: 0,
+            hasAltitude: false,
+            speedSource: "recorded" as const,
+            points: [],
+          },
+          loadedAt: new Date().toISOString(),
+          loadMs: 0,
+        };
+      },
+      async getOrLoadYear(year: number) {
+        return cache.loadYear(year);
+      },
+      getCached: () => undefined,
+      async hasYear() {
+        cache.hasYearCalls += 1;
+        return cache.has();
+      },
+      async refresh() {},
+      cachedYears: () => [],
+      lastLoad: () => ({ at: null, ms: null }),
+    };
+    return cache;
+  }
+
+  function unknownYear(year: number): Error {
+    const err = new Error(`unknown year ${year}`) as Error & { code?: string };
+    err.code = "unknown_year";
+    return err;
+  }
+
+  it("a load that throws unknown_year fails the run once and never retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const db = makeDb({ status: "running", year: 2019, speed: 20, index: 5, total: 100 });
+      const cache = makeYearCache(makePoints(10));
+      cache.load = async () => {
+        throw unknownYear(2019);
+      };
+      const stub = makeSyncScheduler();
+      const worker = startWorker({
+        db,
+        cache,
+        buildLeaderState: () => ({}),
+        onEmit: () => undefined,
+        onStop: () => undefined,
+        startScheduler: stub.runningFactory,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(cache.loadCalls).toBe(1);
+      expect(db.row.status).toBe("failed");
+      expect(db.row.lastError).toBe("no event for year 2019");
+      // Well past every backoff delay: no retry, one failed write.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(cache.loadCalls).toBe(1);
+      expect(db.updates.filter((u) => u.status === "failed")).toHaveLength(1);
+      expect(db.updates.filter((u) => u.status === "loading")).toEqual([]);
+      await worker.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a 503 on load still retries on the backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const db = makeDb({ status: "loading", year: 2025, speed: 20, index: 0 });
+      const cache = makeYearCache(makePoints(10));
+      cache.load = async () => {
+        throw new ApiError(503, "http_503", "http 503");
+      };
+      const stub = makeSyncScheduler();
+      const worker = startWorker({
+        db,
+        cache,
+        buildLeaderState: () => ({}),
+        onEmit: () => undefined,
+        onStop: () => undefined,
+        startScheduler: stub.runningFactory,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(cache.loadCalls).toBe(1);
+      expect(db.row.status).toBe("loading");
+      await vi.advanceTimersByTimeAsync(750);
+      expect(cache.loadCalls).toBe(1);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(cache.loadCalls).toBe(2);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(cache.loadCalls).toBe(3);
+      expect(db.row.status).toBe("loading");
+      expect(db.updates.filter((u) => u.status === "failed")).toEqual([]);
+      await worker.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the 60 s year check fails a running run whose year vanished", async () => {
+    vi.useFakeTimers();
+    try {
+      const db = makeDb({ status: "loading", year: 2025, speed: 20, index: 0 });
+      const cache = makeYearCache(makePoints(10));
+      const stub = makeSyncScheduler();
+      let stops = 0;
+      const worker = startWorker({
+        db,
+        cache,
+        buildLeaderState: () => ({}),
+        onEmit: () => undefined,
+        onStop: () => {
+          stops += 1;
+        },
+        startScheduler: stub.runningFactory,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(db.row.status).toBe("running");
+      // The first minute: the event is there, one check at the 60 s mark.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(cache.hasYearCalls).toBe(1);
+      expect(db.row.status).toBe("running");
+      // The event is deleted: the next check finds it gone and the tick after
+      // fails the run.
+      cache.has = async () => false;
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(cache.hasYearCalls).toBe(1);
+      expect(db.row.status).toBe("running");
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(cache.hasYearCalls).toBe(2);
+      expect(db.row.status).toBe("failed");
+      expect(db.row.lastError).toBe("no event for year 2025");
+      expect(worker.runningStatus()).toBe("failed");
+      expect(stops).toBe(1);
+      // A failed row is not checked again.
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(cache.hasYearCalls).toBe(2);
+      await worker.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("the 60 s year check fails a stopped run whose year vanished", async () => {
+    vi.useFakeTimers();
+    try {
+      const db = makeDb({ status: "stopped", year: 2025, speed: 20, index: 3 });
+      const cache = makeYearCache(makePoints(10));
+      cache.has = async () => false;
+      const stub = makeSyncScheduler();
+      const worker = startWorker({
+        db,
+        cache,
+        buildLeaderState: () => ({}),
+        onEmit: () => undefined,
+        onStop: () => undefined,
+        startScheduler: stub.runningFactory,
+      });
+      await vi.advanceTimersByTimeAsync(59_750);
+      expect(cache.hasYearCalls).toBe(0);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(cache.hasYearCalls).toBe(1);
+      expect(db.row.status).toBe("failed");
+      expect(db.row.lastError).toBe("no event for year 2025");
+      await worker.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a transient year check failure changes nothing and is retried at the next 60 s mark", async () => {
+    for (const err of [
+      new ApiError(null, null, "network error: fetch failed"),
+      new ApiError(503, "http_503", "http 503"),
+      new ApiError(408, "http_408", "http 408"),
+      new ApiError(429, "rate_limited", "slow down"),
+    ]) {
+      vi.useFakeTimers();
+      try {
+        const db = makeDb({ status: "loading", year: 2025, speed: 20, index: 0 });
+        const cache = makeYearCache(makePoints(10));
+        cache.has = async () => {
+          throw err;
+        };
+        const stub = makeSyncScheduler();
+        const worker = startWorker({
+          db,
+          cache,
+          buildLeaderState: () => ({}),
+          onEmit: () => undefined,
+          onStop: () => undefined,
+          startScheduler: stub.runningFactory,
+        });
+        await vi.advanceTimersByTimeAsync(250);
+        expect(db.row.status).toBe("running");
+        const updatesBefore = db.updates.length;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(cache.hasYearCalls).toBe(1);
+        expect(db.row.status).toBe("running");
+        expect(db.row.lastError).toBeNull();
+        // Not retried before the next mark.
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(cache.hasYearCalls).toBe(1);
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(cache.hasYearCalls).toBe(2);
+        expect(db.row.status).toBe("running");
+        expect(db.updates.slice(updatesBefore).filter((u) => u.status != null)).toEqual([]);
+        await worker.stop();
+      } finally {
+        vi.useRealTimers();
+      }
     }
   });
 });

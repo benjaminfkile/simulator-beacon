@@ -122,6 +122,9 @@ function makeFakeCache(
       return opts.flights?.get(year) ?? emptyFlight(year);
     },
     getCached: (year) => opts.flights?.get(year),
+    async hasYear() {
+      return true;
+    },
     async refresh() {
       if (opts.throwOnList) throw new Error("boom");
     },

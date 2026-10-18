@@ -244,4 +244,77 @@ describe("flights cache (simulator-beacon.md 4)", () => {
       code: "unknown_year",
     });
   });
+
+  it("a refresh drops a year whose event is gone from the listing", async () => {
+    let clock = 0;
+    const event = (id: number, year: number): EventItem => ({
+      id,
+      year,
+      name: String(year),
+      statusId: 4,
+      scheduledAt: null,
+      wentLiveAt: null,
+      endedAt: null,
+    });
+    const events: EventItem[] = [event(1, 2024), event(2, 2025)];
+    const locations = new Map<number, LocationRow[]>([
+      [1, makePoints(3)],
+      [2, makePoints(4)],
+    ]);
+    const api = makeApi(events, locations);
+    const cache = createFlightsCache({ api, now: () => clock });
+
+    expect((await cache.listYears()).map((y) => y.year)).toEqual([2025, 2024]);
+    // The 2024 event is deleted; the next refresh (the listing is past its
+    // 60 s age) no longer lists it and the cache no longer holds it.
+    events.splice(0, 1);
+    clock += 61_000;
+    expect((await cache.listYears()).map((y) => y.year)).toEqual([2025]);
+    expect(cache.cachedYears()).toEqual([2025]);
+    expect(cache.getCached(2024)).toBeUndefined();
+  });
+
+  it("hasYear answers from the event listing and drops a vanished year", async () => {
+    const events: EventItem[] = [
+      {
+        id: 1,
+        year: 2025,
+        name: "2025",
+        statusId: 4,
+        scheduledAt: null,
+        wentLiveAt: null,
+        endedAt: null,
+      },
+    ];
+    const api = makeApi(events, new Map([[1, makePoints(2)]]));
+    const cache = createFlightsCache({ api });
+    await cache.loadYear(2025);
+    expect(await cache.hasYear(2025)).toBe(true);
+    expect(cache.cachedYears()).toEqual([2025]);
+    events.splice(0, 1);
+    expect(await cache.hasYear(2025)).toBe(false);
+    expect(cache.cachedYears()).toEqual([]);
+  });
+
+  it("loadYear for a vanished year drops its cached flight", async () => {
+    const events: EventItem[] = [
+      {
+        id: 1,
+        year: 2025,
+        name: "2025",
+        statusId: 4,
+        scheduledAt: null,
+        wentLiveAt: null,
+        endedAt: null,
+      },
+    ];
+    const api = makeApi(events, new Map([[1, makePoints(2)]]));
+    const cache = createFlightsCache({ api });
+    await cache.loadYear(2025);
+    events.splice(0, 1);
+    await expect(cache.loadYear(2025)).rejects.toMatchObject({
+      code: "unknown_year",
+    });
+    expect(cache.getCached(2025)).toBeUndefined();
+  });
 });
