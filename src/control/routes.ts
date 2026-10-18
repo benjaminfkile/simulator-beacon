@@ -2,13 +2,13 @@
 // simulator-beacon.md 2. Fastify serves both surfaces on the same port; CORS
 // is opened for the exact origins in SIM_CORS_ORIGINS.
 //
-// The API only ever writes the sim_run row; it never talks to the hub or the
-// scheduler directly. The leader's worker (see src/worker.ts) reads the row
-// every second and acts on the transitions.
+// The API only ever writes the run; it never talks to the hub or the
+// scheduler directly. The leader's worker (see src/worker.ts) reads the run
+// on its 250 ms tick and acts on the transitions.
 
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
-import type { Db, SimRun } from "../db.js";
+import type { Db, SimRun } from "../runStore.js";
 import type { FlightsCache } from "../flights/cache.js";
 import type { AdminAuth, AdminPrincipal } from "./auth.js";
 import { ApiError } from "../flights/api.js";
@@ -85,10 +85,10 @@ function buildStateBody(row: SimRun, instance: string | null) {
     : null;
   const leaderAtMs = row.leaderAt ? Date.parse(row.leaderAt) : NaN;
   const fresh = Number.isFinite(leaderAtMs) && Date.now() - leaderAtMs <= 10_000;
-  // Live index/cycles/nextFixInMs come from leader_state when fresh so
+  // Live index/cycles/nextFixInMs come from the leader state when fresh so
   // GET /control/state follows the scheduler within a second; else they fall
-  // back to the row (the persisted `index` every ten fixes, `cycles` on
-  // status writes, `nextFixInMs` null).
+  // back to the run (the `index` the leader persists about once a second,
+  // `cycles` on status writes, `nextFixInMs` null).
   const liveRun =
     fresh && leaderState && leaderState.run && typeof leaderState.run === "object"
       ? (leaderState.run as Record<string, unknown>)
@@ -256,8 +256,8 @@ export async function buildControlServer(
     }
     // Guard the year against the current API answer so the caller gets 400
     // rather than a delayed `failed` for an unknown year. If the API is down
-    // we let the row go to `loading` anyway, the worker will surface the
-    // failure through the row and the panel.
+    // we let the run go to `loading` anyway, the worker will surface the
+    // failure through the run and the panel.
     let known = true;
     try {
       const years = await opts.cache.listYears();
@@ -274,8 +274,8 @@ export async function buildControlServer(
         }),
       );
     }
-    // Start resumes (simulator-beacon.md 4): keep the row's index when the
-    // requested year equals the row's year and 0 <= index < total; a run that
+    // Start resumes (simulator-beacon.md 4): keep the run's index when the
+    // requested year equals the run's year and 0 <= index < total; a run that
     // ended without loop (index == total) starts from 0. Restart is from 0 as
     // before; Stop keeps the index, so Stop then Start pauses and resumes.
     const sameYear = current.year === year;
@@ -378,9 +378,9 @@ export async function buildControlServer(
     if (Object.keys(fields).length > 0) {
       return sendJson(reply, 400, errBody("validation_failed", "invalid body", { fields }));
     }
-    // An index seek needs a year on the row: the worker peeks (stopped) or
+    // An index seek needs a year on the run: the worker peeks (stopped) or
     // re-arms (running) against a loaded year; a naked seek without a year is
-    // meaningless. Read the row before writing so we can 409 without touching
+    // meaningless. Read the run before writing so we can 409 without touching
     // the seek columns.
     if (indexRequested) {
       const current = await opts.db.read();

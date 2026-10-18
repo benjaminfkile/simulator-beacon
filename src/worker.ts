@@ -1,32 +1,33 @@
-// The leader-only worker loop (simulator-beacon.md 2 and 4). Reads sim_run on
+// The leader-only worker loop (simulator-beacon.md 2 and 4). Reads the run on
 // its tick, acts on `status` changes, feeds the scheduler's fixes into the
-// beacon core, and persists progress: `index` every ten fixes (the resume
-// point), `leader_state` and `leader_at` about once a second.
+// beacon core, and persists progress: the leader state together with the
+// run's `index` (the resume point) and `lastFixAt`, in one document write
+// about once a second.
 //
 // The tick is 250 ms (simulator-beacon.md 2), so a control change lands within
-// a quarter second; leader_state is written on every fourth tick (about once a
-// second) and immediately after a status change the worker made. The row read
-// is a single indexed select per tick.
+// a quarter second; the leader state is written on every fourth tick (about
+// once a second) and immediately after a status change the worker made. The
+// read on each tick answers from the node's copy of the state document,
+// reloaded when it is older than 250 ms.
 //
 // Every scheduler callback is wrapped so an exception is logged and never
-// escapes, a Stop pressed while the last point goes out that races with the
-// end-of-run write once nulled `active` mid-await, and the resulting
-// unhandledRejection killed the process. Handlers capture the active run at
-// the top and return when it has changed after any await.
+// escapes. A Stop can land while an end-of-run write is in flight, so handlers
+// capture the active run at the top and return when it has changed after any
+// await.
 //
-// While a run is running, or stopped with a year on the row, the worker asks
+// While a run is running, or stopped with a year on the run, the worker asks
 // the cache at most once every 60 s whether `GET /admin/events` still holds an
-// event for the row's year. The check runs beside the tick, never inside it;
+// event for the run's year. The check runs beside the tick, never inside it;
 // when the year is gone the next tick fails the run with `no event for year
 // <year>`. A failed check changes nothing and is tried again at the next 60 s
 // mark (simulator-beacon.md 4).
 //
 // The worker is deliberately independent of the HTTP server: the control API
-// writes the row; the worker sees the change on its next tick. A node that
+// writes the run; the worker sees the change on its next tick. A node that
 // loses leadership stops the worker within one tick, and the new leader
 // resumes from the persisted `index`.
 
-import type { Db, SimRun, SimRunStatus } from "./db.js";
+import type { Db, SimRun, SimRunStatus } from "./runStore.js";
 import type { FlightsCache } from "./flights/cache.js";
 import type { LocationRow } from "./flights/api.js";
 import { ApiError } from "./flights/api.js";
@@ -81,7 +82,7 @@ interface ActiveRun {
   cycles: number;
   points: LocationRow[];
   scheduler: Scheduler;
-  emittedSinceLastPersist: number;
+  lastFixAt: string | null;
   nextFixInMs: number | null;
 }
 
@@ -98,7 +99,7 @@ function nextRetryDelayMs(attempt: number): number {
     : RETRY_DELAY_TAIL_MS;
 }
 
-// How often the leader re-checks that the row's year still has an event.
+// How often the leader re-checks that the run's year still has an event.
 const YEAR_CHECK_INTERVAL_MS = 60_000;
 
 // The cache throws a plain Error with `code = "unknown_year"` when no event
@@ -138,10 +139,10 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
   let lastRunStatus: SimRunStatus | null = null;
   let lastPersistedIndex = 0;
   let ticksSinceLeaderStateWrite = 0;
-  // Pending retry for a transient flight-load failure. When the row is still
+  // Pending retry for a transient flight-load failure. When the run is still
   // `loading` with no active scheduler and `now() >= pendingRetryAt`, the tick
-  // calls loadAndStart again with the row's current index. The counter resets
-  // on a successful load, on a year change, and on a `stopped` row.
+  // calls loadAndStart again with the run's current index. The counter resets
+  // on a successful load, on a year change, and on a `stopped` run.
   let pendingRetryAt: number | null = null;
   let retryAttempt = 0;
   let retryYear: number | null = null;
@@ -186,22 +187,20 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     return { ...base, run };
   }
 
+  // Writes the leader state and, while a run is active, its resume point
+  // (the scheduler's next index) and lastFixAt in the same write. A failure is
+  // logged and the next cadence write tries again.
   async function persistLeaderState(): Promise<void> {
+    const run = active;
+    const progress = run
+      ? { year: run.year, index: run.scheduler.currentIndex(), lastFixAt: run.lastFixAt }
+      : undefined;
     try {
-      await opts.db.writeLeaderState(buildLeaderPayload());
+      await opts.db.writeLeaderState(buildLeaderPayload(), progress);
       ticksSinceLeaderStateWrite = 0;
+      if (progress && active === run) lastPersistedIndex = progress.index;
     } catch (err) {
       logError(err, "writeLeaderState");
-    }
-  }
-
-  async function persistIndex(index: number): Promise<void> {
-    try {
-      await opts.db.update({ index });
-      lastPersistedIndex = index;
-    } catch (err) {
-      // Persistence failures are logged; the next tick will retry.
-      logError(err, "persistIndex", { index });
     }
   }
 
@@ -225,35 +224,23 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     } catch (err) {
       logError(err, "onEmit", { year: run.year, index: e.index });
     }
-    run.emittedSinceLastPersist += 1;
-    // Persist index every ten fixes: `e.index` is the emitted fix, so the
-    // resume point after this one is `e.index + 1`. A hand-off during the
-    // window between persists skips at most a few points.
-    if (run.emittedSinceLastPersist >= 10) {
-      run.emittedSinceLastPersist = 0;
-      const nextIndex = e.index + 1;
-      await persistIndex(nextIndex);
-      if (active !== run) return;
-      try {
-        await opts.db.update({ lastFixAt: e.recordedAtNow });
-      } catch (err) {
-        logError(err, "update lastFixAt");
-      }
-    }
+    // The index and lastFixAt reach the document with the next leader state
+    // write (about once a second), so a hand-off resumes within about a
+    // second of the last fix.
+    run.lastFixAt = e.recordedAtNow;
   }
 
   async function handleEnd(): Promise<void> {
     const run = active;
     if (!run) return;
     const total = run.points.length;
-    // Loop at the end (simulator-beacon.md 4): when `loop` is true (the row's
+    // Loop at the end (simulator-beacon.md 4): when `loop` is true (the run's
     // current value), start again from the first point at once with the same
-    // year and speed, and bump `cycles`, persisted on the row. When it is
+    // year and speed, and bump `cycles`, persisted on the run. When it is
     // false the run stops with the index at the last point.
     if (run.loop) {
       const nextCycles = run.cycles + 1;
       run.cycles = nextCycles;
-      run.emittedSinceLastPersist = 0;
       lastPersistedIndex = 0;
       try {
         await opts.db.update({ index: 0, cycles: nextCycles });
@@ -277,7 +264,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     } catch (err) {
       logError(err, "onStop");
     }
-    // A status change the worker made: persist leader_state immediately.
+    // A status change the worker made: persist the leader state immediately.
     await persistLeaderState();
   }
 
@@ -316,7 +303,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
             ? err.message
             : String(err);
       if (isTransientLoadError(err)) {
-        // The row stays at loading with lastError set so the control page shows
+        // The run stays at loading with lastError set so the control page shows
         // why; the tick retries after the backoff delay.
         retryAttempt += 1;
         const delay = nextRetryDelayMs(retryAttempt);
@@ -385,7 +372,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       cycles: row.cycles,
       points: flight.points,
       scheduler,
-      emittedSinceLastPersist: 0,
+      lastFixAt: null,
       nextFixInMs: null,
     };
     lastPersistedIndex = startIndex;
@@ -405,7 +392,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     yearCheckAt = now();
     goneYear = null;
     scheduler.start(startIndex);
-    // A status change the worker made: persist leader_state immediately.
+    // A status change the worker made: persist the leader state immediately.
     await persistLeaderState();
   }
 
@@ -418,7 +405,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       logError(err, "update failed(no event)", { year });
     }
     lastRunStatus = "failed";
-    // A status change the worker made: persist leader_state immediately.
+    // A status change the worker made: persist the leader state immediately.
     await persistLeaderState();
   }
 
@@ -457,14 +444,14 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
   }
 
   async function handleSeek(row: SimRun): Promise<boolean> {
-    // A seek request the operator dropped on the row (simulator-beacon.md 4).
+    // A seek request the operator dropped on the run (simulator-beacon.md 4).
     // A drag leaves the latest one standing: the conditional clear only wins
-    // when seek_to is still the value we acted on. Returns true when the
+    // when seekTo is still the value we acted on. Returns true when the
     // handler owned the tick (skip the cadence-based writes below).
     if (row.seekTo == null) return false;
     const seekTo = row.seekTo;
     if (row.status === "loading") {
-      // The flight is still loading: the request waits on the row and the
+      // The flight is still loading: the request waits on the run and the
       // first running tick applies it (a drag right after Start).
       return false;
     }
@@ -483,7 +470,6 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       // (simulator-beacon.md 4).
       if (!active) return false;
       const idx = Math.max(0, Math.min(seekTo, active.points.length - 1));
-      active.emittedSinceLastPersist = 0;
       active.scheduler.start(idx);
       lastPersistedIndex = idx;
       try {
@@ -493,8 +479,8 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       }
       return true;
     }
-    // Stopped with a year on the row: peek at that point through onEmit and
-    // persist the index; the status stays stopped so Start (B9) resumes from
+    // Stopped with a year on the run: peek at that point through onEmit and
+    // persist the index; the status stays stopped so Start resumes from
     // there.
     if (row.status === "stopped" && row.year != null) {
       let flight;
@@ -556,9 +542,9 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       const prev = lastRunStatus;
       lastRunStatus = row.status;
       if (goneYear != null) {
-        // A year check found the row's year gone: a running or stopped run
+        // A year check found the run's year gone: a running or stopped run
         // for that year fails; anything else (a new year, a Start that is
-        // loading, a failed row) has moved on.
+        // loading, a failed run) has moved on.
         const year = goneYear;
         goneYear = null;
         if (
@@ -572,7 +558,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       let workerChangedStatus = false;
       if (row.status === "stopped" || row.status === "failed") {
         if (active) await stopActive();
-        // A stopped or failed row clears any pending retry from a transient
+        // A stopped or failed run clears any pending retry from a transient
         // flight-load failure so an operator's Stop during the wait wins at
         // once.
         resetLoadRetry();
@@ -580,12 +566,12 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
         if (active) await stopActive();
         resetLoadRetry();
         await loadAndStart(row);
-        // loadAndStart flipped the row's status (running or failed) itself
-        // and persisted leader_state; skip the cadence-based write below.
+        // loadAndStart flipped the run's status (running or failed) itself
+        // and persisted the leader state; skip the cadence-based write below.
         return;
       } else if (row.status === "loading" && !active) {
         // Still loading after a transient flight-load failure: retry when the
-        // backoff delay has elapsed, or right away if the row's year changed
+        // backoff delay has elapsed, or right away if the run's year changed
         // during the wait.
         if (row.year !== retryYear) {
           resetLoadRetry();
@@ -597,7 +583,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
           return;
         }
       } else if (row.status === "running") {
-        // The API writes `loading` and the worker flips to `running`; a row
+        // The API writes `loading` and the worker flips to `running`; a run
         // directly at `running` on the first tick after a leader hand-off is
         // the resume case.
         if (!active) {
@@ -605,10 +591,10 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
           await loadAndStart(patched);
           return;
         }
-        // Compare the row with what is running and apply per section 4:
+        // Compare the run with what is running and apply per section 4:
         // a new year stops the active run and restarts from the first point;
         // a new speed re-times the next delay in place; a new loop applies at
-        // the next end. Cycles is authoritative on the row so a follower
+        // the next end. Cycles is authoritative on the run so a follower
         // taking over never regresses it.
         if (row.year != null && row.year !== active.year) {
           await stopActive();
@@ -633,18 +619,18 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
           active.cycles = row.cycles;
         }
       }
-      // A seek queued on the row (simulator-beacon.md 4): running re-arms the
+      // A seek queued on the run (simulator-beacon.md 4): running re-arms the
       // scheduler; stopped emits one point through onEmit and stays stopped so
-      // Start (B9) resumes from there; loading keeps it for the first running
+      // Start resumes from there; loading keeps it for the first running
       // tick; failed drops it.
       if (row.seekTo != null) {
         await handleSeek(row);
       }
       maybeCheckYear(row);
-      // Cadence: write leader_state every `persistEvery` ticks (about once a
+      // Cadence: write the leader state every `persistEvery` ticks (about once a
       // second at tickMs=250), or immediately after a status change the worker
       // made (loadAndStart and handleEnd persist inline; the fall-through case
-      // here is stopActive on a row-driven stop, which also counts).
+      // here is stopActive on a stop written on the run, which also counts).
       if (
         (prev === "running" || prev === "loading") &&
         (row.status === "stopped" || row.status === "failed")
@@ -675,7 +661,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
   }
 
   // The first tick fires after `tickMs`, matching the recurring cadence. A
-  // hand-off gains at most a quarter second; the resume path (running row
+  // hand-off gains at most a quarter second; the resume path (running run
   // without an active scheduler) will load the flight on the first tick.
   schedule();
 

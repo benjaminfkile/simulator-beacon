@@ -9,7 +9,6 @@ const base = {
   SIM_HUB_URL: "wss://gateway.example.com/hub",
   SIM_INGEST_CHANNEL: "simulator-beacon-dev:ingest",
   SIM_GATEWAY_INTERNAL_URL: "http://172.17.0.1:8080",
-  SIM_DB_CONNECTION: "postgresql://wmsfo_sim_app_dev:x@localhost:5432/wmsfo_sim_dev?sslmode=disable",
   SIM_COGNITO_ISSUER: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc",
   SIM_COGNITO_CLIENT_IDS: "1abc,2def",
   SIM_ADMIN_GROUP: "admin",
@@ -27,7 +26,6 @@ describe("loadConfig", () => {
     expect(c.cognitoClientIds).toEqual(["1abc", "2def"]);
     expect(c.corsOrigins).toEqual(["http://localhost:5175", "https://sim.example.com"]);
     expect(c.adminGroup).toBe("admin");
-    expect(c.dbConnection).toContain("wmsfo_sim_dev");
   });
 
   it("fails fast on missing keys, listing only the names", () => {
@@ -100,13 +98,10 @@ describe("loadConfig", () => {
     );
   });
 
-  it("rejects a non-postgres DB connection string", () => {
-    expect(() =>
-      loadConfig({ ...base, SIM_DB_CONNECTION: "mysql://x:y@localhost/db" }),
-    ).toThrowError(/SIM_DB_CONNECTION/);
-    expect(() =>
-      loadConfig({ ...base, SIM_DB_CONNECTION: "not-a-url" }),
-    ).toThrowError(/SIM_DB_CONNECTION/);
+  it("needs no SIM_DB_CONNECTION and ignores one still in the environment", () => {
+    const c = loadConfig({ ...base, SIM_DB_CONNECTION: "not-a-url" });
+    expect(c.env).toBe("dev");
+    expect(Object.keys(c)).not.toContain("dbConnection");
   });
 
   it("rejects a bad CORS origin", () => {

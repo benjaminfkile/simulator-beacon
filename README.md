@@ -1,6 +1,6 @@
 # simulator-beacon
 
-The WMSFO v2 simulator beacon: an enrolled beacon that replays a past year's recorded flight at a chosen speed so a dev event set live shows a whole flight on the tracker. A Node and TypeScript service on the fleet behind the gateway, plus a one-page control site on Vercel that signs in through the admin Cognito pool.
+The WMSFO v2 simulator beacon: an enrolled beacon that replays a past year's recorded flight at a chosen speed so a dev event set live shows a whole flight on the tracker. A Node and TypeScript service on the fleet behind the gateway, plus a one-page control site on Vercel that signs in through the admin Cognito pool. The service has no database: the run (status, year, speed, index, the leader's state) lives in this beacon's state document, which the WMSFO API keeps per beacon and `beacon-library` reads and writes, so the leader and the followers share it and a new leader resumes within about a second of the last fix.
 
 Read `docs/` before touching anything:
 
@@ -10,4 +10,4 @@ Read `docs/` before touching anything:
 
 ## Run, test, build
 
-Requires Node 22 or newer. In the root (the service) and again in `web/` (the control page): `npm ci`, then `npm test`, `npm run typecheck`, `npm run build`. `npm run contracts:check` in the root verifies `contracts/` against `wmsfo-api` at the pinned `CONTRACTS_SHA`. `npm run beacon:check` verifies the vendored `beacon-library` tarball against `vendor/beacon-library-1.1.0.tgz.sha256` and confirms the pins around it. A local run against dev uses `SIM_FORCE_LEADER=true`; `docs/simulator-beacon.md` section 10 has the recipe and section 7 the configuration keys.
+Requires Node 22 or newer. In the root (the service) and again in `web/` (the control page): `npm ci`, then `npm test`, `npm run typecheck`, `npm run build`. `npm run contracts:check` in the root verifies `contracts/` against `wmsfo-api` at the pinned `CONTRACTS_SHA`. `npm run beacon:check` verifies the vendored `beacon-library` tarball against `vendor/beacon-library-1.2.0.tgz.sha256` and confirms the pins around it. A local run against dev uses `SIM_FORCE_LEADER=true` and needs no database (the run is in the beacon's state document on the dev API); `docs/simulator-beacon.md` section 10 has the recipe and section 7 the configuration keys.
