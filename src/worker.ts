@@ -14,6 +14,13 @@
 // unhandledRejection killed the process. Handlers capture the active run at
 // the top and return when it has changed after any await.
 //
+// While a run is running, or stopped with a year on the row, the worker asks
+// the cache at most once every 60 s whether `GET /admin/events` still holds an
+// event for the row's year. The check runs beside the tick, never inside it;
+// when the year is gone the next tick fails the run with `no event for year
+// <year>`. A failed check changes nothing and is tried again at the next 60 s
+// mark (simulator-beacon.md 4).
+//
 // The worker is deliberately independent of the HTTP server: the control API
 // writes the row; the worker sees the change on its next tick. A node that
 // loses leadership stops the worker within one tick, and the new leader
@@ -91,7 +98,24 @@ function nextRetryDelayMs(attempt: number): number {
     : RETRY_DELAY_TAIL_MS;
 }
 
+// How often the leader re-checks that the row's year still has an event.
+const YEAR_CHECK_INTERVAL_MS = 60_000;
+
+// The cache throws a plain Error with `code = "unknown_year"` when no event
+// exists for the year; that is permanent, like a 4xx.
+function isUnknownYearError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err as Error & { code?: unknown }).code === "unknown_year"
+  );
+}
+
+function noEventMessage(year: number): string {
+  return `no event for year ${year}`;
+}
+
 function isTransientLoadError(err: unknown): boolean {
+  if (isUnknownYearError(err)) return false;
   if (!(err instanceof ApiError)) return true;
   const s = err.status;
   if (s == null) return true;
@@ -121,6 +145,12 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
   let pendingRetryAt: number | null = null;
   let retryAttempt = 0;
   let retryYear: number | null = null;
+  // The year check: when the last one started (or a load last confirmed the
+  // year), whether one is in flight, and a year a check found gone, which the
+  // next tick acts on.
+  let yearCheckAt = now();
+  let yearCheckInFlight = false;
+  let goneYear: number | null = null;
 
   function resetLoadRetry(): void {
     pendingRetryAt = null;
@@ -278,8 +308,9 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     try {
       flight = await opts.cache.loadYear(row.year);
     } catch (err) {
-      const message =
-        err instanceof ApiError
+      const message = isUnknownYearError(err)
+        ? noEventMessage(row.year)
+        : err instanceof ApiError
           ? `${err.code ?? "api_error"}: ${err.message}`
           : err instanceof Error
             ? err.message
@@ -371,9 +402,58 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
     }
     lastRunStatus = "running";
     resetLoadRetry();
+    yearCheckAt = now();
+    goneYear = null;
     scheduler.start(startIndex);
     // A status change the worker made: persist leader_state immediately.
     await persistLeaderState();
+  }
+
+  async function failMissingYear(year: number): Promise<void> {
+    if (active) await stopActive();
+    resetLoadRetry();
+    try {
+      await opts.db.update({ status: "failed", lastError: noEventMessage(year) });
+    } catch (err) {
+      logError(err, "update failed(no event)", { year });
+    }
+    lastRunStatus = "failed";
+    // A status change the worker made: persist leader_state immediately.
+    await persistLeaderState();
+  }
+
+  function maybeCheckYear(row: SimRun): void {
+    if (yearCheckInFlight || row.year == null) return;
+    const eligible =
+      (row.status === "running" && active != null) || row.status === "stopped";
+    if (!eligible) return;
+    if (now() - yearCheckAt < YEAR_CHECK_INTERVAL_MS) return;
+    const year = row.year;
+    yearCheckAt = now();
+    yearCheckInFlight = true;
+    opts.cache
+      .hasYear(year)
+      .then(
+        (present) => {
+          if (!present && !stopped) goneYear = year;
+        },
+        (err) => {
+          // A failed check (network, 5xx, 408, 429, or anything else) changes
+          // nothing; the next 60 s mark tries again.
+          if (!log?.warn) return;
+          try {
+            log.warn(
+              { year, err: err instanceof Error ? err.message : String(err) },
+              "year check failed; retrying at the next mark",
+            );
+          } catch {
+            // A logger throw must not escape into the loop.
+          }
+        },
+      )
+      .finally(() => {
+        yearCheckInFlight = false;
+      });
   }
 
   async function handleSeek(row: SimRun): Promise<boolean> {
@@ -475,6 +555,20 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       ticksSinceLeaderStateWrite += 1;
       const prev = lastRunStatus;
       lastRunStatus = row.status;
+      if (goneYear != null) {
+        // A year check found the row's year gone: a running or stopped run
+        // for that year fails; anything else (a new year, a Start that is
+        // loading, a failed row) has moved on.
+        const year = goneYear;
+        goneYear = null;
+        if (
+          row.year === year &&
+          (row.status === "running" || row.status === "stopped")
+        ) {
+          await failMissingYear(year);
+          return;
+        }
+      }
       let workerChangedStatus = false;
       if (row.status === "stopped" || row.status === "failed") {
         if (active) await stopActive();
@@ -546,6 +640,7 @@ export function startWorker(opts: WorkerOptions): WorkerHandle {
       if (row.seekTo != null) {
         await handleSeek(row);
       }
+      maybeCheckYear(row);
       // Cadence: write leader_state every `persistEvery` ticks (about once a
       // second at tickMs=250), or immediately after a status change the worker
       // made (loadAndStart and handleEnd persist inline; the fall-through case

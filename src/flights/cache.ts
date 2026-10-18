@@ -3,6 +3,8 @@
 // when the last refresh is older than a minute. `GET /control/years` reads
 // straight off the cache, so `pointCount` is the true count of published
 // locations for the year and a year with no published locations is omitted.
+// Any event listing (a refresh, a load, or `hasYear`) that no longer holds a
+// year drops that year from the cache.
 
 import type { EventItem, FlightsApi, LocationRow } from "./api.js";
 import { buildFlightSeries, type FlightSeries } from "./series.js";
@@ -27,6 +29,10 @@ export interface FlightsCache {
   // by the worker's peek path.
   getOrLoadYear(year: number): Promise<CachedFlight>;
   getCached(year: number): CachedFlight | undefined;
+  // True when `GET /admin/events` still holds an event for the year. False
+  // drops the year's cached flight. An API failure rejects and changes
+  // nothing.
+  hasYear(year: number): Promise<boolean>;
   refresh(): Promise<void>;
   cachedYears(): number[];
   lastLoad(): { at: string | null; ms: number | null };
@@ -149,11 +155,19 @@ export function createFlightsCache(opts: FlightsCacheOptions): FlightsCache {
     const primaries = primaryEvents(events);
     const match = primaries.find((p) => p.year === year);
     if (!match) {
+      cache.delete(year);
       const err = new Error(`unknown year ${year}`) as Error & { code?: string };
       err.code = "unknown_year";
       throw err;
     }
     return loadPoints(year, match.event);
+  }
+
+  async function hasYear(year: number): Promise<boolean> {
+    const events = await opts.api.listEvents();
+    if (events.some((e) => e.year === year)) return true;
+    cache.delete(year);
+    return false;
   }
 
   async function getOrLoadYear(year: number): Promise<CachedFlight> {
@@ -167,6 +181,7 @@ export function createFlightsCache(opts: FlightsCacheOptions): FlightsCache {
     loadYear,
     getOrLoadYear,
     getCached: (year) => cache.get(year),
+    hasYear,
     refresh,
     cachedYears: () => Array.from(cache.keys()).sort((a, b) => b - a),
     lastLoad: () => ({ at: lastLoadAt, ms: lastLoadMs }),
