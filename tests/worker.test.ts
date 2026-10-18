@@ -1,22 +1,29 @@
-// The worker's hand-off: a new leader reads the row that a previous leader
+// The worker's hand-off: a new leader reads the run that a previous leader
 // persisted with an intermediate index and resumes from there. Also covers
-// index persistence every ten fixes and the run-failed path when the flights
-// API refuses.
+// the index written with the leader state about once a second and the
+// run-failed path when the flights API refuses.
 
 import { describe, expect, it, vi } from "vitest";
 import { startWorker } from "../src/worker.js";
-import type { Db, SimRun, SimRunUpdate } from "../src/db.js";
+import type { Db, RunProgress, SimRun, SimRunUpdate } from "../src/runStore.js";
 import type { FlightsCache } from "../src/flights/cache.js";
 import type { LocationRow } from "../src/flights/api.js";
 import { ApiError } from "../src/flights/api.js";
+import { createFakeRest, createStateStore, type FakeRest } from "beacon-library";
+import { createStateDb, emptyDocument, type SimDocument } from "../src/stateDb.js";
 
 interface FakeDbHandle extends Db {
   readonly row: SimRun;
   readonly updates: SimRunUpdate[];
+  readonly leaderWrites: Array<{ state: Record<string, unknown>; progress: RunProgress | undefined }>;
 }
 
 function makeDb(initial: Partial<SimRun> = {}): FakeDbHandle {
-  const state: { row: SimRun; updates: SimRunUpdate[] } = {
+  const state: {
+    row: SimRun;
+    updates: SimRunUpdate[];
+    leaderWrites: Array<{ state: Record<string, unknown>; progress: RunProgress | undefined }>;
+  } = {
     row: {
       status: "stopped",
       year: null,
@@ -38,6 +45,7 @@ function makeDb(initial: Partial<SimRun> = {}): FakeDbHandle {
       ...initial,
     },
     updates: [],
+    leaderWrites: [],
   };
   const db: Db = {
     async init() {},
@@ -53,9 +61,14 @@ function makeDb(initial: Partial<SimRun> = {}): FakeDbHandle {
       } as SimRun;
       return { ...state.row };
     },
-    async writeLeaderState(s) {
+    async writeLeaderState(s, progress) {
       state.row.leaderState = s;
       state.row.leaderAt = new Date().toISOString();
+      if (progress && state.row.status === "running" && state.row.year === progress.year) {
+        state.row.index = progress.index;
+        state.row.lastFixAt = progress.lastFixAt ?? state.row.lastFixAt;
+      }
+      state.leaderWrites.push({ state: s, progress });
     },
     async clearSeekAndSetIndex(index: number) {
       if (state.row.seekTo === index) {
@@ -81,6 +94,7 @@ function makeDb(initial: Partial<SimRun> = {}): FakeDbHandle {
   return Object.defineProperties(db as FakeDbHandle, {
     row: { get: () => state.row, enumerable: true },
     updates: { get: () => state.updates, enumerable: true },
+    leaderWrites: { get: () => state.leaderWrites, enumerable: true },
   });
 }
 
@@ -219,7 +233,7 @@ function makeSyncScheduler(): {
 }
 
 describe("worker (simulator-beacon.md 2 and 4)", () => {
-  it("persists index every ten fixes", async () => {
+  it("writes the index with its leader state about once a second", async () => {
     const db = makeDb({ status: "loading", year: 2025, speed: 20, index: 0, total: 0 });
     const cache = makeCache(makePoints(50));
     const stub = makeSyncScheduler();
@@ -236,18 +250,24 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
     // The tick reads `loading`, loads the flight, flips to `running`.
     expect(db.row.status).toBe("running");
     expect(db.row.total).toBe(50);
-    // Emit ten fixes; only the tenth should trigger an index persistence.
-    for (let i = 0; i < 9; i++) stub.emitOne();
-    // Nine emits: no persistence yet.
-    const persistBefore = db.updates.filter((u) => u.index !== undefined).length;
-    stub.emitOne();
-    // Persistence happens in a microtask chain: await one round-trip.
+    const writesAfterStart = db.leaderWrites.length;
+    for (let i = 0; i < 7; i++) stub.emitOne();
+    // Fixes alone write nothing: no separate index update.
     await new Promise((r) => setTimeout(r, 0));
-    const persistAfter = db.updates.filter((u) => u.index !== undefined).length;
-    expect(persistAfter).toBe(persistBefore + 1);
-    // The persisted index is 10 (the next resume point after emitting index 9).
-    const lastIndexUpdate = db.updates.filter((u) => u.index !== undefined).at(-1);
-    expect(lastIndexUpdate?.index).toBe(10);
+    expect(db.updates.filter((u) => u.index !== undefined && u.status === undefined)).toEqual([]);
+    expect(db.leaderWrites.length).toBe(writesAfterStart);
+    // Three ticks: still inside the second.
+    for (let i = 0; i < 3; i++) await worker.tick();
+    expect(db.leaderWrites.length).toBe(writesAfterStart);
+    // The fourth tick (about a second at 250 ms) writes the leader state and,
+    // in the same write, the resume point after the seventh fix.
+    await worker.tick();
+    expect(db.leaderWrites.length).toBe(writesAfterStart + 1);
+    const last = db.leaderWrites.at(-1)!;
+    expect(last.progress).toMatchObject({ year: 2025, index: 7 });
+    expect(last.progress?.lastFixAt).toEqual(expect.any(String));
+    expect(db.row.index).toBe(7);
+    expect(db.row.lastFixAt).toBe(last.progress?.lastFixAt);
     await worker.stop();
   });
 
@@ -1428,6 +1448,82 @@ describe("worker (simulator-beacon.md 2 and 4)", () => {
       } finally {
         vi.useRealTimers();
       }
+    }
+  });
+});
+
+describe("worker over the beacon state document (simulator-beacon.md 2 and 6)", () => {
+  const silent = { info: () => undefined, warn: () => undefined, error: () => undefined };
+
+  function nodeDb(rest: FakeRest): Db {
+    const store = createStateStore<SimDocument>({ rest, log: silent, empty: emptyDocument });
+    return createStateDb({ store });
+  }
+
+  it("node A persists its index about every second and node B resumes there", async () => {
+    vi.useFakeTimers({ now: Date.parse("2026-10-18T12:00:00.000Z") });
+    try {
+      const rest = createFakeRest(() => Date.now());
+      const points = makePoints(400);
+      const dbA = nodeDb(rest);
+      await dbA.init();
+      await dbA.update({ status: "loading", year: 2025, speed: 60 });
+
+      // The recording is 1 s apart, so at 60x every fix waits the 100 ms floor.
+      const emitsA: number[] = [];
+      const workerA = startWorker({
+        db: dbA,
+        cache: makeCache(points),
+        buildLeaderState: () => ({ node: "a" }),
+        onEmit: (fix) => emitsA.push(fix.point.seq - 1),
+        onStop: () => undefined,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect((rest.state as SimDocument).run?.status).toBe("running");
+
+      // Sample the document every second: the index follows the last fix
+      // within about a second (ten fixes at 100 ms).
+      const persisted: number[] = [];
+      for (let s = 0; s < 4; s++) {
+        await vi.advanceTimersByTimeAsync(1000);
+        const index = (rest.state as SimDocument).run!.index;
+        persisted.push(index);
+        const nextToSend = emitsA.at(-1)! + 1;
+        expect(index).toBeLessThanOrEqual(nextToSend);
+        expect(nextToSend - index).toBeLessThanOrEqual(11);
+        expect((rest.state as SimDocument).run!.lastFixAt).not.toBeNull();
+        expect((rest.state as SimDocument).leader?.state).toMatchObject({ node: "a" });
+      }
+      for (let i = 1; i < persisted.length; i++) {
+        expect(persisted[i]! - persisted[i - 1]!).toBeGreaterThanOrEqual(8);
+        expect(persisted[i]! - persisted[i - 1]!).toBeLessThanOrEqual(12);
+      }
+
+      // Node A loses leadership; the document keeps the last persisted index.
+      await workerA.stop();
+      const lastSentA = emitsA.at(-1)!;
+      const resumeAt = (rest.state as SimDocument).run!.index;
+      expect(lastSentA + 1 - resumeAt).toBeLessThanOrEqual(11);
+
+      // Node B, its own store over the same document, becomes leader.
+      const dbB = nodeDb(rest);
+      await dbB.init();
+      const emitsB: number[] = [];
+      const workerB = startWorker({
+        db: dbB,
+        cache: makeCache(points),
+        buildLeaderState: () => ({ node: "b" }),
+        onEmit: (fix) => emitsB.push(fix.point.seq - 1),
+        onStop: () => undefined,
+      });
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(emitsB[0]).toBe(resumeAt);
+      expect((rest.state as SimDocument).run).toMatchObject({ status: "running", year: 2025 });
+      expect((rest.state as SimDocument).run!.index).toBeGreaterThan(resumeAt);
+      expect((rest.state as SimDocument).leader?.state).toMatchObject({ node: "b" });
+      await workerB.stop();
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

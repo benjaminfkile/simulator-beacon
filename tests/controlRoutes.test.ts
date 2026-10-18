@@ -8,7 +8,7 @@ import { generateKeyPair, SignJWT, type JWTPayload } from "jose";
 import type { FastifyInstance } from "fastify";
 import { createAdminAuth } from "../src/control/auth.js";
 import { buildControlServer } from "../src/control/routes.js";
-import type { Db, SimRun, SimRunUpdate } from "../src/db.js";
+import type { Db, SimRun, SimRunUpdate } from "../src/runStore.js";
 import type { FlightsCache } from "../src/flights/cache.js";
 
 type Key = Awaited<ReturnType<typeof generateKeyPair>>;

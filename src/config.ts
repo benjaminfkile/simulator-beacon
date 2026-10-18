@@ -9,7 +9,6 @@ export interface Config {
   hubUrl: string;
   ingestChannel: string;
   gatewayInternalUrl: string;
-  dbConnection: string;
   cognitoIssuer: string;
   cognitoClientIds: string[];
   adminGroup: string;
@@ -36,7 +35,6 @@ const REQUIRED_KEYS = [
   "SIM_HUB_URL",
   "SIM_INGEST_CHANNEL",
   "SIM_GATEWAY_INTERNAL_URL",
-  "SIM_DB_CONNECTION",
   "SIM_COGNITO_ISSUER",
   "SIM_COGNITO_CLIENT_IDS",
   "SIM_ADMIN_GROUP",
@@ -101,15 +99,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (isNonEmpty(env.SIM_INGEST_CHANNEL) && !env.SIM_INGEST_CHANNEL.includes(":"))
     bad.push("SIM_INGEST_CHANNEL");
 
-  if (isNonEmpty(env.SIM_DB_CONNECTION)) {
-    try {
-      const u = new URL(env.SIM_DB_CONNECTION);
-      if (u.protocol !== "postgres:" && u.protocol !== "postgresql:") bad.push("SIM_DB_CONNECTION");
-    } catch {
-      bad.push("SIM_DB_CONNECTION");
-    }
-  }
-
   let cognitoClientIds: string[] = [];
   if (isNonEmpty(env.SIM_COGNITO_CLIENT_IDS)) {
     cognitoClientIds = splitCsv(env.SIM_COGNITO_CLIENT_IDS);
@@ -166,7 +155,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     hubUrl: env.SIM_HUB_URL!,
     ingestChannel: env.SIM_INGEST_CHANNEL!,
     gatewayInternalUrl: env.SIM_GATEWAY_INTERNAL_URL!.replace(/\/$/, ""),
-    dbConnection: env.SIM_DB_CONNECTION!,
     cognitoIssuer: env.SIM_COGNITO_ISSUER!,
     cognitoClientIds,
     adminGroup: env.SIM_ADMIN_GROUP!,

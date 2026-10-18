@@ -7,7 +7,7 @@ import { describe, expect, it, beforeAll } from "vitest";
 import { generateKeyPair, SignJWT, type JWTPayload } from "jose";
 import { createAdminAuth } from "../src/control/auth.js";
 import { buildControlServer } from "../src/control/routes.js";
-import type { Db, SimRun, SimRunUpdate } from "../src/db.js";
+import type { Db, SimRun, SimRunUpdate } from "../src/runStore.js";
 import type { CachedFlight, FlightsCache } from "../src/flights/cache.js";
 import type { LocationRow } from "../src/flights/api.js";
 import { buildFlightSeries, haversineMeters } from "../src/flights/series.js";

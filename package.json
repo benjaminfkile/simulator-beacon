@@ -18,16 +18,13 @@
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
-    "beacon-library": "file:vendor/beacon-library-1.1.0.tgz",
+    "beacon-library": "file:vendor/beacon-library-1.2.0.tgz",
     "fastify": "^4.29.1",
     "jose": "^6.2.12",
-    "pg": "8.13.1",
-    "pg-connection-string": "2.14.0",
     "pino": "9.5.0"
   },
   "devDependencies": {
     "@types/node": "22.9.0",
-    "@types/pg": "8.11.10",
     "ajv": "8.17.1",
     "ajv-formats": "3.0.1",
     "ts-node": "10.9.2",

@@ -10,7 +10,7 @@ import addFormats from "ajv-formats";
 import { FakeHubClient } from "beacon-library";
 import { startService } from "../src/service.js";
 import type { Config } from "../src/config.js";
-import type { Db, SimRun, SimRunUpdate } from "../src/db.js";
+import type { Db, SimRun, SimRunUpdate } from "../src/runStore.js";
 import type { EventItem, LocationRow } from "../src/flights/api.js";
 
 function makeConfig(overrides: Partial<Config> = {}): Config {
@@ -22,7 +22,6 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     hubUrl: "wss://hub.local/hub",
     ingestChannel: "simulator-beacon-dev:ingest",
     gatewayInternalUrl: "http://gateway.local",
-    dbConnection: "postgres://ignored",
     cognitoIssuer: "https://cognito-idp.us-west-2.amazonaws.com/pool-admin",
     cognitoClientIds: ["client-admin"],
     adminGroup: "admin",
@@ -306,6 +305,54 @@ describe("service (simulator-beacon.md 2 and 8)", () => {
       expect(Object.keys(proc).sort()).toEqual(
         ["instance", "leader", "node", "uptimeS", "version"].sort(),
       );
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("keeps the run in the beacon's state document through the beacon key", async () => {
+    const controller = makeFetch();
+    const document: { state: Record<string, unknown> | null; version: number } = {
+      state: { other: { keep: true } },
+      version: 3,
+    };
+    const stateCalls: Array<{ method: string; key: string | null }> = [];
+    const inner = controller.fetch;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (!url.endsWith("/beacons/me/state")) return inner(input, init);
+      const method = (init?.method ?? "GET").toUpperCase();
+      const key = new Headers(init?.headers).get("X-Beacon-Key");
+      stateCalls.push({ method, key });
+      const now = new Date().toISOString();
+      if (method === "GET") {
+        return jsonResponse(200, { state: document.state, stateVersion: document.version, updatedAt: now, serverTime: now });
+      }
+      const body = JSON.parse(String(init?.body)) as { state: Record<string, unknown>; expectedVersion: number };
+      if (body.expectedVersion !== document.version) {
+        return jsonResponse(409, { code: "state_version_conflict", message: "newer", details: { stateVersion: document.version } });
+      }
+      document.state = body.state;
+      document.version += 1;
+      return jsonResponse(200, { stateVersion: document.version, updatedAt: now, serverTime: now });
+    }) as typeof fetch;
+    const service = await startService(makeConfig(), {
+      buildHub: () => new FakeHubClient(),
+      fetchImpl,
+      port: 0,
+      installProcessHandlers: false,
+      leaderOverrides: { autoStart: false },
+    });
+    try {
+      expect(stateCalls.map((c) => c.method)).toEqual(["GET", "PUT"]);
+      expect(stateCalls.every((c) => c.key === "wbk_test")).toBe(true);
+      expect(document.version).toBe(4);
+      expect(document.state).toMatchObject({
+        other: { keep: true },
+        run: { status: "stopped", year: null, speed: 1, loop: true, index: 0 },
+      });
+      const run = await service.db.read();
+      expect(run).toMatchObject({ status: "stopped", speed: 1, leaderState: null });
     } finally {
       await service.stop();
     }

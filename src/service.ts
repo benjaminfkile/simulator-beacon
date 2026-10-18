@@ -1,7 +1,7 @@
-// Wires the beacon-library core to the simulator's worker, database, and
-// control server. `main.ts` is a thin caller of `startService`; the returned
-// `stop()` unwinds the leader, the worker, the beacon, the HTTP server, and
-// the database pool in that order.
+// Wires the beacon-library core to the simulator's worker, the run in the
+// beacon's state document, and the control server. `main.ts` is a thin caller
+// of `startService`; the returned `stop()` unwinds the leader, the worker, the
+// beacon, and the HTTP server in that order.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -9,17 +9,21 @@ import { fileURLToPath } from "node:url";
 import pino, { type Logger } from "pino";
 import {
   createBeacon,
+  createStateStore,
   gateOnLeader,
   setLatestFix,
   type Beacon,
+  type BeaconLogger,
   type HealthCore,
   type HubClient,
   type HubOptions,
   type Leader,
+  type Rest,
 } from "beacon-library";
 import type { FastifyInstance } from "fastify";
 import type { Config } from "./config.js";
-import { createDb as createDbDefault, type Db } from "./db.js";
+import type { Db } from "./runStore.js";
+import { createStateDb, emptyDocument, trackUpdatedAt, type SimDocument } from "./stateDb.js";
 import { createFlightsApi } from "./flights/api.js";
 import { createFlightsCache } from "./flights/cache.js";
 import { createAdminAuth } from "./control/auth.js";
@@ -36,7 +40,7 @@ export interface ServiceLeaderOverrides {
 
 export interface ServiceDeps {
   logger?: Logger;
-  createDb?: (opts: { connectionString: string }) => Db;
+  createDb?: (opts: { rest: Rest }) => Db;
   buildHub?: (o: HubOptions) => HubClient;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -79,6 +83,12 @@ function readVersion(): string {
   }
 }
 
+function createRunDb(rest: Rest, log: BeaconLogger): Db {
+  const tracked = trackUpdatedAt(rest);
+  const store = createStateStore<SimDocument>({ rest: tracked.rest, log, empty: emptyDocument });
+  return createStateDb({ store, updatedAt: tracked.updatedAt });
+}
+
 export async function startService(config: Config, deps: ServiceDeps = {}): Promise<Service> {
   const log = deps.logger ?? pino({ level: config.logLevel });
   const version = deps.version ?? readVersion();
@@ -105,9 +115,6 @@ export async function startService(config: Config, deps: ServiceDeps = {}): Prom
       );
     });
   }
-
-  const db: Db = (deps.createDb ?? createDbDefault)({ connectionString: config.dbConnection });
-  await db.init();
 
   const flightsApi = createFlightsApi({
     apiBaseUrl: config.apiBaseUrl,
@@ -196,6 +203,13 @@ export async function startService(config: Config, deps: ServiceDeps = {}): Prom
     buildHealth,
     buildDebug,
   });
+
+  // The run lives in this beacon's state document (simulator-beacon.md 6),
+  // read and written through the beacon's own REST client.
+  const db: Db = deps.createDb
+    ? deps.createDb({ rest: beacon.rest })
+    : createRunDb(beacon.rest, beaconLog);
+  await db.init();
 
   function beaconLeaderState(): Record<string, unknown> {
     const s = beacon.state;
