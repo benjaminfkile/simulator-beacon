@@ -1,5 +1,5 @@
-// Great-circle helpers shared by the flight series (speed from distance) and
-// the heading fill (course from bearing). Distances are haversine metres on a
+// Great-circle helpers for the fills in `fill.ts`: the speed from distance,
+// which the flight series shares, and the heading from bearing. Distances are haversine metres on a
 // sphere of radius 6,371 km; bearings are degrees clockwise from true north.
 
 const EARTH_RADIUS_M = 6_371_000;

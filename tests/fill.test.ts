@@ -1,15 +1,20 @@
-// Heading fill (simulator-beacon.md 4). A recorded heading passes through; a
-// null heading takes the course from the nearest earlier point at least 15 m
-// back, else the course to the nearest later point at least 15 m ahead, else
-// stays null. Fixtures in Missoula coordinates.
+// Heading and speed fills (simulator-beacon.md 4). A recorded heading passes
+// through; a null heading takes the course from the nearest earlier point at
+// least 15 m back, else the course to the nearest later point at least 15 m
+// ahead, else stays null. A recorded speed passes through; a null speed takes
+// the recording's own speed from the previous point, the first point from the
+// segment ahead, else stays null. Fixtures in Missoula coordinates.
 
 import { describe, expect, it } from "vitest";
 import type { LocationRow } from "../src/flights/api.js";
 import {
   fillHeadings,
+  fillSpeeds,
   haversineMeters,
   initialBearingDeg,
-} from "../src/flights/heading.js";
+  segmentSpeedMps,
+} from "../src/flights/fill.js";
+import { buildFlightSeries } from "../src/flights/series.js";
 
 const LAT = 46.8721;
 const LNG = -113.994;
@@ -122,5 +127,76 @@ describe("fillHeadings (simulator-beacon.md 4)", () => {
       expect(v).toBeGreaterThanOrEqual(0);
       expect(v).toBeLessThan(360);
     }
+  });
+});
+
+function timed(seq: number, sec: number, lat: number, lng: number, speedMps: number | null = null): LocationRow {
+  return {
+    ...row(seq, lat, lng),
+    recordedAt: new Date(Date.parse("2025-12-22T01:00:00.000Z") + sec * 1000).toISOString(),
+    speedMps,
+  };
+}
+
+// Points `stepM` metres apart eastward and `stepSec` seconds apart.
+function eastTimedRun(n: number, stepM: number, stepSec: number): LocationRow[] {
+  return Array.from({ length: n }, (_, i) => timed(i + 1, i * stepSec, LAT, LNG + (i * stepM) / M_PER_DEG_LNG));
+}
+
+describe("fillSpeeds (simulator-beacon.md 4)", () => {
+  it("passes a recorded speed through untouched", () => {
+    const points = eastTimedRun(3, 100, 10);
+    points[1] = { ...points[1]!, speedMps: 3.14159 };
+    const out = fillSpeeds(points);
+    expect(out[1]!.speedMps).toBe(3.14159);
+  });
+
+  it("derives 10.0 along a run of points 100 m and 10 s apart, the first from the segment ahead", () => {
+    const out = fillSpeeds(eastTimedRun(5, 100, 10));
+    for (const p of out) expect(p.speedMps).toBe(10);
+  });
+
+  it("gives null to a point with the same recordedAt as the previous one", () => {
+    const points = [
+      timed(1, 0, LAT, LNG),
+      timed(2, 10, LAT, LNG + 100 / M_PER_DEG_LNG),
+      timed(3, 10, LAT, LNG + 200 / M_PER_DEG_LNG),
+    ];
+    const out = fillSpeeds(points);
+    expect(out[0]!.speedMps).toBe(10);
+    expect(out[1]!.speedMps).toBe(10);
+    expect(out[2]!.speedMps).toBeNull();
+  });
+
+  it("gives null to a single point", () => {
+    expect(fillSpeeds([timed(1, 0, LAT, LNG)])[0]!.speedMps).toBeNull();
+  });
+
+  it("returns new rows and leaves the input unchanged", () => {
+    const points = eastTimedRun(4, 100, 10);
+    const before = JSON.parse(JSON.stringify(points));
+    const out = fillSpeeds(points);
+    expect(points).toEqual(before);
+    expect(out).not.toBe(points);
+    out.forEach((p, i) => expect(p).not.toBe(points[i]));
+  });
+
+  it("agrees with the flight series to the digit", () => {
+    // Uneven steps and gaps so the rounding is exercised.
+    const points = [
+      timed(1, 0, LAT, LNG),
+      timed(2, 7, LAT + 37 / M_PER_DEG_LAT, LNG + 81 / M_PER_DEG_LNG),
+      timed(3, 13, LAT + 52 / M_PER_DEG_LAT, LNG + 173 / M_PER_DEG_LNG),
+      timed(4, 13, LAT + 60 / M_PER_DEG_LAT, LNG + 190 / M_PER_DEG_LNG),
+      timed(5, 20, LAT + 91 / M_PER_DEG_LAT, LNG + 251 / M_PER_DEG_LNG),
+    ];
+    const filled = fillSpeeds(points);
+    const series = buildFlightSeries(points);
+    for (let i = 1; i < points.length; i++) {
+      expect(filled[i]!.speedMps).toBe(series.points[i]!.speedMps);
+      expect(filled[i]!.speedMps).toBe(segmentSpeedMps(points[i - 1]!, points[i]!));
+    }
+    expect(series.points[0]!.speedMps).toBeNull();
+    expect(filled[0]!.speedMps).toBe(segmentSpeedMps(points[0]!, points[1]!));
   });
 });

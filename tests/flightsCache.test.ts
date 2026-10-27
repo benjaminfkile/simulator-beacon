@@ -344,4 +344,34 @@ describe("flights cache (simulator-beacon.md 4)", () => {
     }
     expect(cache.getCached(2025)!.points).toBe(loaded.points);
   });
+
+  it("the loaded points carry filled speeds when the recording has none", async () => {
+    const events: EventItem[] = [
+      {
+        id: 1,
+        year: 2025,
+        name: "2025",
+        statusId: 4,
+        scheduledAt: null,
+        wentLiveAt: null,
+        endedAt: null,
+      },
+    ];
+    const recorded = makePoints(6).reverse();
+    for (const p of recorded) expect(p.speedMps).toBeNull();
+    const api = makeApi(events, new Map([[1, recorded]]));
+    const cache = createFlightsCache({ api });
+    const loaded = await cache.loadYear(2025);
+    for (const p of loaded.points) {
+      expect(typeof p.speedMps).toBe("number");
+      // The fixture steps about 13.6 m a second.
+      expect(p.speedMps!).toBeGreaterThan(12);
+      expect(p.speedMps!).toBeLessThan(15);
+    }
+    // The series still reports the speeds as derived, with the same values.
+    expect(loaded.series.speedSource).toBe("derived");
+    for (let i = 1; i < loaded.points.length; i++) {
+      expect(loaded.series.points[i]!.speedMps).toBe(loaded.points[i]!.speedMps);
+    }
+  });
 });
