@@ -7,6 +7,7 @@
 // year drops that year from the cache.
 
 import type { EventItem, FlightsApi, LocationRow } from "./api.js";
+import { fillHeadings } from "./heading.js";
 import { buildFlightSeries, type FlightSeries } from "./series.js";
 
 export interface CachedFlight {
@@ -74,8 +75,11 @@ export function createFlightsCache(opts: FlightsCacheOptions): FlightsCache {
 
   async function loadPoints(year: number, event: EventItem): Promise<CachedFlight> {
     const started = now();
-    const points = await opts.api.listPublishedLocations(event.id);
-    points.sort((a, b) => a.seq - b.seq);
+    const fetched = await opts.api.listPublishedLocations(event.id);
+    fetched.sort((a, b) => a.seq - b.seq);
+    // Fill the headings the recording lacks once here, so every replayed fix
+    // (a run, a seek's peek, a resume, a Restart) carries one.
+    const points = fillHeadings(fetched);
     const took = now() - started;
     const cached: CachedFlight = {
       year,

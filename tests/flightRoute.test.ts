@@ -10,7 +10,8 @@ import { buildControlServer } from "../src/control/routes.js";
 import type { Db, SimRun, SimRunUpdate } from "../src/runStore.js";
 import type { CachedFlight, FlightsCache } from "../src/flights/cache.js";
 import type { LocationRow } from "../src/flights/api.js";
-import { buildFlightSeries, haversineMeters } from "../src/flights/series.js";
+import { buildFlightSeries } from "../src/flights/series.js";
+import { haversineMeters } from "../src/flights/geo.js";
 
 type Key = Awaited<ReturnType<typeof generateKeyPair>>;
 

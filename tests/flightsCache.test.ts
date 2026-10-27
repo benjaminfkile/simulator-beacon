@@ -317,4 +317,31 @@ describe("flights cache (simulator-beacon.md 4)", () => {
     });
     expect(cache.getCached(2025)).toBeUndefined();
   });
+
+  it("the loaded points carry filled headings when the recording has none", async () => {
+    const events: EventItem[] = [
+      {
+        id: 1,
+        year: 2025,
+        name: "2025",
+        statusId: 4,
+        scheduledAt: null,
+        wentLiveAt: null,
+        endedAt: null,
+      },
+    ];
+    // Delivered out of `seq` order: the fill runs after the sort.
+    const recorded = makePoints(6).reverse();
+    const api = makeApi(events, new Map([[1, recorded]]));
+    const cache = createFlightsCache({ api });
+    const loaded = await cache.loadYear(2025);
+    expect(loaded.points.map((p) => p.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    for (const p of loaded.points) {
+      expect(typeof p.headingDeg).toBe("number");
+      // The fixture walks north-west.
+      expect(p.headingDeg!).toBeGreaterThan(270);
+      expect(p.headingDeg!).toBeLessThan(360);
+    }
+    expect(cache.getCached(2025)!.points).toBe(loaded.points);
+  });
 });
