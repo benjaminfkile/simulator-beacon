@@ -3,16 +3,17 @@
 // page charts speed and altitude against `t` (ms since the first point) and
 // scrubs the playhead with `i` (the point index the seek writes).
 //
-// `speedMps` on each point is the recorded value when present, else derived
-// from the haversine distance from the previous point divided by the seconds
-// between the two recordedAt values; the first point and any zero/negative
-// time delta produce null. `speedSource` describes the whole series: all
+// `speedMps` on each point is the recorded value when present, else the
+// recording's own speed from the previous point (`segmentSpeedMps` in
+// `fill.ts`, the derivation the replayed fixes use: the haversine distance
+// divided by the seconds between the two recordedAt values, rounded to 0.1);
+// the first point and any zero/negative time delta produce null. `speedSource` describes the whole series: all
 // recorded non-null values, all derived, or a mix. `altitudeM` is the
 // recorded value or null; `hasAltitude` is true when at least one point had
 // one.
 
 import type { LocationRow } from "./api.js";
-import { haversineMeters } from "./geo.js";
+import { segmentSpeedMps } from "./fill.js";
 
 export interface FlightSeriesPoint {
   i: number;
@@ -67,16 +68,8 @@ export function buildFlightSeries(points: LocationRow[]): FlightSeries {
     } else if (i === 0) {
       speedMps = null;
     } else {
-      const prev = points[i - 1]!;
-      const prevMs = Date.parse(prev.recordedAt);
-      const deltaSec = (pMs - prevMs) / 1000;
-      if (!Number.isFinite(deltaSec) || deltaSec <= 0) {
-        speedMps = null;
-      } else {
-        const meters = haversineMeters(prev.lat, prev.lng, p.lat, p.lng);
-        speedMps = meters / deltaSec;
-        sawDerived = true;
-      }
+      speedMps = segmentSpeedMps(points[i - 1]!, p);
+      if (speedMps != null) sawDerived = true;
     }
     const altitudeM = p.altitudeM;
     if (altitudeM != null) hasAltitude = true;

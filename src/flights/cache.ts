@@ -7,7 +7,7 @@
 // year drops that year from the cache.
 
 import type { EventItem, FlightsApi, LocationRow } from "./api.js";
-import { fillHeadings } from "./heading.js";
+import { fillHeadings, fillSpeeds } from "./fill.js";
 import { buildFlightSeries, type FlightSeries } from "./series.js";
 
 export interface CachedFlight {
@@ -77,16 +77,20 @@ export function createFlightsCache(opts: FlightsCacheOptions): FlightsCache {
     const started = now();
     const fetched = await opts.api.listPublishedLocations(event.id);
     fetched.sort((a, b) => a.seq - b.seq);
-    // Fill the headings the recording lacks once here, so every replayed fix
-    // (a run, a seek's peek, a resume, a Restart) carries one.
-    const points = fillHeadings(fetched);
+    // Fill the headings and the speeds the recording lacks once here, so every
+    // replayed fix (a run, a seek's peek, a resume, a Restart) carries them.
+    // The series is built from the rows before the speed fill: it derives the
+    // same speeds through the same `segmentSpeedMps` and keeps `speedSource`
+    // telling recorded speeds from derived ones.
+    const headed = fillHeadings(fetched);
+    const points = fillSpeeds(headed);
     const took = now() - started;
     const cached: CachedFlight = {
       year,
       eventId: event.id,
       name: event.name,
       points,
-      series: buildFlightSeries(points),
+      series: buildFlightSeries(headed),
       loadedAt: new Date(now()).toISOString(),
       loadMs: took,
     };
